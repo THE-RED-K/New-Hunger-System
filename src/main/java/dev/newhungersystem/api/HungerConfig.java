@@ -581,6 +581,6 @@ public final class HungerConfig {
     }
 
     public static void register() {
-        ModLoadingContext.get().registerConfig(ModConfig.Type.SERVER, SPEC);
+        ModLoadingContext.get().registerConfig(ModConfig.Type.COMMON, SPEC);
     }
 }
