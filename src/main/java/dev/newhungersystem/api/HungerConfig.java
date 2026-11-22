@@ -208,8 +208,9 @@ public final class HungerConfig {
                 .comment("Slow regen interval = fastRegenIntervalTicks * this value (same heal per tick). Default 4.")
                 .defineInRange("slowRegenSpeedDivisor", 4.0D, 1.0D, 100.0D);
         SLOW_REGEN_HUNGER_RATIO = builder
-                .comment("Slow regen requires foodLevel >= maxHunger * this ratio. Default 0.9 (vanilla 18/20).")
-                .defineInRange("slowRegenHungerRatio", 0.9D, 0.0D, 1.0D);
+                .comment("Global regen gate: BOTH fast (saturation) and slow (hunger) regen require",
+                        "foodLevel >= maxHunger * this ratio. Below it all natural regen pauses. Default 0.6 (12/20).")
+                .defineInRange("slowRegenHungerRatio", 0.6D, 0.0D, 1.0D);
         STARVE_DAMAGE_INTERVAL_TICKS = builder
                 .comment("Ticks between starvation damage ticks. Default 80 (vanilla).")
                 .defineInRange("starveDamageIntervalTicks", 80.0D, 1.0D, 1000.0D);
@@ -467,7 +468,7 @@ public final class HungerConfig {
     }
 
     public static float slowRegenHungerRatio() {
-        return dbl(SLOW_REGEN_HUNGER_RATIO, 0.9F);
+        return dbl(SLOW_REGEN_HUNGER_RATIO, 0.6F);
     }
 
     public static int starveDamageIntervalTicks() {

@@ -73,6 +73,9 @@ public final class StatFactors {
         }
         float zero = HungerConfig.regenAtZeroHungerPercent();
         float full = HungerConfig.regenAtFullHungerPercent();
-        return zero + (full - zero) * (foodLevel / max);
+        // 钳制: API 可能把 maxHunger 调低到当前 foodLevel 以下; 不 clamp 会让回血百分比越过 full 档。
+        // 同时挡住异常负数, 保证返回值 >= 0, 避免 NaN/负值经 player.heal 污染血量。
+        float ratio = Mth.clamp(foodLevel / max, 0.0F, 1.0F);
+        return Math.max(0.0F, zero + (full - zero) * ratio);
     }
 }

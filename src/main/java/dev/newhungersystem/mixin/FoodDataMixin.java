@@ -35,6 +35,7 @@ public abstract class FoodDataMixin {
     private float saturationLevel;
     @Shadow
     private float exhaustionLevel;
+    /** 原版计时器, 本模组现在只用于饥饿掉血分支 */
     @Shadow
     private int tickTimer;
     /** 原版每 tick 记录上一次饥饿值, 供原版饥饿条的变化动画读取 */
@@ -43,16 +44,33 @@ public abstract class FoodDataMixin {
     @Shadow
     public abstract void addExhaustion(float amount);
 
+    /** 快轨(饱和度驱动)独立计时器 — 与慢轨并行, 互不抢占 */
+    private int nhsFastRegenTimer;
+    /** 慢轨(饥饿值驱动)独立计时器 — 饱和度 > 0 时同样在跑 */
+    private int nhsSlowRegenTimer;
+
     /**
-     * 重写原版饥饿回血曲线; 全部数值来自 {@link HungerConfig} 的 regen / food 配置组:
-     * - 快速回血由饱和度驱动, 慢速回血节拍 = 快回 × slowRegenSpeedDivisor, 单次回血量相同;
-     * - 两者计价 = heal × regenExhaustionPerHealth (原版 1 点血 = 6.0 消耗值);
-     * - 回血量由 foodRegenPercent (饥饿值缩放) 与消化过载因子决定;
-     * - 保留原版 gamerule; 饥饿掉血**故意不做原版难度判定**(Normal 保 1 血 / Easy 保 10 血 /
-     *   Peaceful 免伤), 强度交给 starveDamage* 配置; 和平模式的饥饿回复仍沿用原版 (Player.aiStep)。
+     * 重写原版饥饿回血曲线; 全部数值来自 {@link HungerConfig} 的 regen / food 配置组。
+     * <p>
+     * <b>双轨并行</b>：
+     * <ul>
+     *   <li><b>共同钳制</b>：两轨都要求 饥饿值 ≥ {@code maxHunger × slowRegenHungerRatio}（默认 60%），
+     *       跌破即两轨同时停止 —— 这是"回着回着自发暂停"的点；</li>
+     *   <li>快轨 = 饱和度 &gt; 0 且受伤，节拍 {@code fastRegenIntervalTicks}（默认 10 tick）；</li>
+     *   <li>慢轨 = 饥饿值达标且受伤，节拍 {@code slowRegenIntervalTicks}（默认 40 tick）。
+     *       <b>不再要求饱和度耗尽</b>，所以饥饿值达标时两轨会同时回血、同时计价消耗值。</li>
+     * </ul>
+     * 两轨各自有独立计时器，任一轨条件不满足就立刻把自己的计时器归零（防止恢复条件时瞬间连发）。
+     * 由于两轨都在扣消耗值，饥饿值会持续下降，跌破慢轨门槛后回血<b>自发暂停</b>，
+     * 同时腾出空间让消化值继续转化，降低消化值堆积到呕吐阈值的概率。
+     * <p>
+     * 单次回血量 = {@code foodRegenPercent(foodLevel)/100 × digRegenFactor(player)}，
+     * 计价 = <b>实际回血量</b> × {@code regenExhaustionPerHealth}（默认 6.0）。
+     * 保留原版 gamerule；饥饿掉血是独立第三分支，**故意不做原版难度判定**
+     * (Normal 保 1 血 / Easy 保 10 血 / Peaceful 免伤由原版处理，本模组按配置无条件扣血)。
      *
      * @author THEREDK
-     * @reason 实现基于饱和度/饥饿值的自定义回血曲线: 饥饿值仅缩放回血量, 不再直接触发回血; 消化过载额外减速
+     * @reason 实现饱和度与饥饿值双轨并行的回血曲线；饥饿值缩放回血量并作为慢轨门槛，消化过载额外减速
      */
     @Overwrite
     public void tick(Player player) {
@@ -77,47 +95,72 @@ public abstract class FoodDataMixin {
         }
 
         boolean regen = player.level().getGameRules().getBoolean(GameRules.RULE_NATURAL_REGENERATION);
+        boolean hurt = player.isHurt();
         float healCost = HungerConfig.regenExhaustionPerHealth();
+        // 共同钳制: 两轨共用同一个饥饿值门槛 (默认 60%)。低于门槛时即使饱和度充足也不回血。
+        boolean hungerOk = this.foodLevel >= StatFactors.maxHunger() * HungerConfig.slowRegenHungerRatio();
 
-        // 新回血: 饱和度驱动 + 饥饿值缩放回血量 + 消化过载减速
-        if (regen && this.saturationLevel > 0.0F && player.isHurt()) {
-            this.tickTimer++;
-            if (this.tickTimer >= HungerConfig.fastRegenIntervalTicks()) {
-                float heal = StatFactors.foodRegenPercent(this.foodLevel) / 100.0F * digRegenFactor(player);
-                if (heal > 0.0F) {
-                    player.heal(heal);
-                }
-                this.addExhaustion(heal * healCost);
-                this.tickTimer = 0;
+        // ---- 快轨: 饱和度驱动 (与慢轨并行, 使用独立计时器) ----
+        if (regen && hurt && hungerOk && this.saturationLevel > 0.0F) {
+            if (++this.nhsFastRegenTimer >= HungerConfig.fastRegenIntervalTicks()) {
+                this.applyRegenHeal(player, healCost);
+                this.nhsFastRegenTimer = 0;
             }
-        } else if (regen && this.saturationLevel <= 0.0F
-                && this.foodLevel >= StatFactors.maxHunger() * HungerConfig.slowRegenHungerRatio()
-                && player.isHurt()) {
-            // 慢速回血 (饥饿值达标、饱和度耗尽时): 节拍 = 快回 × 倍率, 单次回血量相同
-            this.tickTimer++;
-            if (this.tickTimer >= HungerConfig.slowRegenIntervalTicks()) {
-                float heal = StatFactors.foodRegenPercent(this.foodLevel) / 100.0F * digRegenFactor(player);
-                if (heal > 0.0F) {
-                    player.heal(heal);
-                }
-                this.addExhaustion(heal * healCost);
-                this.tickTimer = 0;
+        } else {
+            this.nhsFastRegenTimer = 0;
+        }
+
+        // ---- 慢轨: 饥饿值驱动 ----
+        // 不再写 saturationLevel <= 0, 饱和度还有时会与快轨同时回血; 门槛与快轨共用 hungerOk。
+        if (regen && hurt && hungerOk) {
+            if (++this.nhsSlowRegenTimer >= HungerConfig.slowRegenIntervalTicks()) {
+                this.applyRegenHeal(player, healCost);
+                this.nhsSlowRegenTimer = 0;
             }
-        } else if (this.foodLevel <= 0) {
-            // 饥饿掉血。
-            // 注意: 与原版分支C 不同, 这里**故意不做难度判定** —— 原版会保证
-            // Normal 至少留 1 点血、Easy 至少留 10 点血、Peaceful 不受饿死伤害,
-            // 本模组按 starveDamageIntervalTicks / starveDamageAmount 无条件扣血
-            // (由整合包用配置控制强度, 而不是被难度悄悄兜底)。
+        } else {
+            this.nhsSlowRegenTimer = 0;
+        }
+
+        // ---- 饥饿掉血: 独立第三分支, 不受回血计时器影响 ----
+        // 注意: 与原版分支 C 不同, 这里**故意不做难度判定** —— 原版会保证
+        // Normal 至少留 1 点血、Easy 至少留 10 点血、Peaceful 不受饿死伤害,
+        // 本模组按 starveDamageIntervalTicks / starveDamageAmount 无条件扣血
+        // (由整合包用配置控制强度, 而不是被难度悄悄兜底)。
+        if (this.foodLevel <= 0) {
             this.tickTimer++;
             if (this.tickTimer >= HungerConfig.starveDamageIntervalTicks()) {
                 player.hurt(player.damageSources().starve(), HungerConfig.starveDamageAmount());
                 this.tickTimer = 0;
             }
         } else {
-            // 原版行为: 三个分支都没命中时归零计时器。
-            // 漏掉这一步会让计时跨状态累积, 条件一恢复就"瞬间回血/瞬间掉血"。
+            // 三个分支都没命中时归零计时器, 避免跨状态累积造成瞬间掉血。
             this.tickTimer = 0;
+        }
+    }
+
+    /**
+     * 执行一次回血并计价。两轨共用。
+     * <p>
+     * 钳制检查：
+     * <ol>
+     *   <li>{@link StatFactors#foodRegenPercent(int)} 已把饥饿值比例 clamp 到 [0,1]，
+     *       所以即使 API 调低 maxHunger 导致 foodLevel &gt; maxHunger 也不会超量回血；</li>
+     *   <li>{@code digRegenFactor} 来自自定义属性（范围 0~1024），其它模组可能写出 NaN/负值，
+     *       必须先做有限性与正值判断，否则 NaN 会污染血量与消耗值；</li>
+     *   <li>按 {@code player.heal()} 实际回的血量计价，而不是按请求的 heal 计价 ——
+     *       满血附近 player.heal 会自行截短，按请求值收费会白扣消耗值。</li>
+     * </ol>
+     */
+    private void applyRegenHeal(Player player, float healCost) {
+        float heal = StatFactors.foodRegenPercent(this.foodLevel) / 100.0F * digRegenFactor(player);
+        if (!Float.isFinite(heal) || heal <= 0.0F) {
+            return;
+        }
+        float before = player.getHealth();
+        player.heal(heal);
+        float actual = player.getHealth() - before;
+        if (actual > 0.0F) {
+            this.addExhaustion(actual * healCost);
         }
     }
 

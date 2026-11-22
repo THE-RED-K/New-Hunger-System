@@ -159,7 +159,8 @@ public final class FoodHealthHelper {
     /**
      * 1:1 镜像 {@link FoodDataMixin#tick} 的回血分支火焰:
      * 消耗值每满 maxExhaustion → 扣 1 点饱和度(快回燃料) 或 1 点饥饿值(慢回燃料);
-     * 快回: sat &gt; 0 &amp;&amp; isHurt; 慢回: sat ≤ 0 &amp;&amp; hunger ≥ maxHunger×ratio &amp;&amp; isHurt;
+     * 共同钳制: hunger ≥ maxHunger×ratio (默认 0.6), 低于门槛两轨都停;
+     * 快回: sat &gt; 0 &amp;&amp; isHurt; 慢回: hunger ≥ 门槛 &amp;&amp; isHurt (不要求 sat ≤ 0, 两轨并行);
      * 单次回血 = foodRegenPercent(hunger)/100 × digRegenFactor, 每次回血消耗 heal×healCost 消耗值。
      * <p>
      * 由于间隔(interval)只改变"多久回一次"而不改变总消耗/总回复比, 模拟按事件步进
@@ -196,8 +197,8 @@ public final class FoodHealthHelper {
         float recovered = 0.0F;
         int guard = 0;
         while (recovered < recoverable && hunger > 0.001F && guard++ < MAX_SIM_STEPS) {
-            if (sat <= 0.0F && hunger < threshold) {
-                break;               // 毫无燃料 (无饱和度且饥饿值不足慢回门槛)
+            if (hunger < threshold) {
+                break;               // 共同钳制: 饥饿值低于门槛 → 快/慢两轨都停, 即使还有饱和度
             }
             // 单次回血量 (1:1 镜像 FoodDataMixin; 饥饿值取整层给 foodRegenPercent)
             float heal = StatFactors.foodRegenPercent((int) Math.floor(hunger)) / 100.0F * factor;
@@ -227,7 +228,8 @@ public final class FoodHealthHelper {
 
     /**
      * 是否显示本模组的回血预显。与 AppleSkin 不同，不按"饥饿值 ≥ 18"排除：
-     * 本模组只要饱和度 &gt; 0（或饥饿值达到慢回门槛）就会自然回血，原版门槛不适用。
+     * 本模组要求饥饿值达到 {@code slowRegenHungerRatio} 门槛（默认 60%）才会自然回血，
+     * 且饱和度还有时快轨与慢轨并行，原版门槛不适用。
      * 和平模式有独立的被动回血，Regeneration/Wither/POISON 也会叠加或抵消血量变化，
      * 预览会误导，故与 AppleSkin shouldShowEstimatedHealth 一样跳过三种效果。
      */
