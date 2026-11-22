@@ -18,6 +18,12 @@ public final class ClientConfig {
     public static final ForgeConfigSpec.BooleanValue SHOW_FOOD_VALUES_OVERLAY;
     /** 副手食物也参与预显 */
     public static final ForgeConfigSpec.BooleanValue SHOW_FOOD_VALUES_OVERLAY_WHEN_OFFHAND;
+    /** 血条上显示进食 (消化链) 后预计可回复的血量 */
+    public static final ForgeConfigSpec.BooleanValue SHOW_FOOD_HEALTH_HUD_OVERLAY;
+    /** 物品提示栏: 按住 SHIFT 时显示食物消化值/消化饱和度条 (仿 AppleSkin) */
+    public static final ForgeConfigSpec.BooleanValue SHOW_FOOD_VALUES_IN_TOOLTIP;
+    /** 物品提示栏: 无需按键始终显示 */
+    public static final ForgeConfigSpec.BooleanValue SHOW_FOOD_VALUES_IN_TOOLTIP_ALWAYS;
     /** 消耗值底栏 (81px, 画在饥饿条之下) */
     public static final ForgeConfigSpec.BooleanValue SHOW_FOOD_EXHAUSTION_UNDERLAY;
     /** F3 调试屏附加消化值行 */
@@ -41,7 +47,7 @@ public final class ClientConfig {
     public static final ForgeConfigSpec.BooleanValue SUPPRESS_APPLESKIN_SATURATION;
     /** AppleSkin 的消耗值底栏 (本模组已有同款) */
     public static final ForgeConfigSpec.BooleanValue SUPPRESS_APPLESKIN_EXHAUSTION;
-    /** AppleSkin 的回血量预览 (在血条上, 本模组未实现, 默认保留) */
+    /** AppleSkin 的回血量预览 (在血条上, 本模组已用自己的消化链估算替代, 默认取消) */
     public static final ForgeConfigSpec.BooleanValue SUPPRESS_APPLESKIN_HEALTH;
     /** 装了 AppleSkin 时隐藏本模组的数值显示 */
     public static final ForgeConfigSpec.BooleanValue HIDE_NUMBERS_WITH_APPLESKIN;
@@ -60,6 +66,17 @@ public final class ClientConfig {
         SHOW_FOOD_VALUES_OVERLAY_WHEN_OFFHAND = builder
                 .comment("If true, enables the digestion overlays for food in your off-hand")
                 .define("showFoodValuesHudOverlayWhenOffhand", true);
+        SHOW_FOOD_HEALTH_HUD_OVERLAY = builder
+                .comment("If true, shows an estimate on your health bar of how much health you will regain",
+                        "after eating the food in hand (digestion -> hunger -> health chain estimate)")
+                .define("showFoodHealthHudOverlay", true);
+        SHOW_FOOD_VALUES_IN_TOOLTIP = builder
+                .comment("If true, shows the digestion and digestion saturation restored by the food",
+                        "in its tooltip while holding SHIFT")
+                .define("showFoodValuesInTooltip", true);
+        SHOW_FOOD_VALUES_IN_TOOLTIP_ALWAYS = builder
+                .comment("If true, the food digest values tooltip is always shown, without requiring SHIFT")
+                .define("showFoodValuesInTooltipAlways", true);
         SHOW_FOOD_EXHAUSTION_UNDERLAY = builder
                 .comment("If true, shows your food exhaustion as a progress bar behind the hunger bars")
                 .define("showFoodExhaustionHudUnderlay", true);
@@ -106,8 +123,11 @@ public final class ClientConfig {
                         "(showFoodExhaustionHudUnderlay) - the two draw into the exact same bar.")
                 .define("suppressAppleSkinExhaustionOverlay", true);
         SUPPRESS_APPLESKIN_HEALTH = builder
-                .comment("Cancel HUDOverlayEvent.HealthRestored (AppleSkin's health preview on the health bar).")
-                .define("suppressAppleSkinHealthOverlay", false);
+                .comment("Cancel HUDOverlayEvent.HealthRestored (AppleSkin's health preview on the health bar).",
+                        "Default true - its estimate reads vanilla hunger, but this mod routes eating through",
+                        "digestion, so the vanilla-based preview shows health gain that will never happen.",
+                        "This mod provides its own chain estimate (digestion -> hunger -> health) instead.")
+                .define("suppressAppleSkinHealthOverlay", true);
         HIDE_NUMBERS_WITH_APPLESKIN = builder
                 .comment("If true, hide this mod's numeric readouts when AppleSkin is installed.")
                 .define("hideNumbersWithAppleSkin", false);
@@ -132,6 +152,18 @@ public final class ClientConfig {
 
     public static boolean offhand() {
         return SHOW_FOOD_VALUES_OVERLAY_WHEN_OFFHAND.get();
+    }
+
+    public static boolean showFoodHealthHudOverlay() {
+        return SHOW_FOOD_HEALTH_HUD_OVERLAY.get();
+    }
+
+    public static boolean showFoodValuesInTooltip() {
+        return SHOW_FOOD_VALUES_IN_TOOLTIP.get();
+    }
+
+    public static boolean showFoodValuesInTooltipAlways() {
+        return SHOW_FOOD_VALUES_IN_TOOLTIP_ALWAYS.get();
     }
 
     public static boolean showExhaustionUnderlay() {

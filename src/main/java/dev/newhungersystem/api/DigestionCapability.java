@@ -25,7 +25,7 @@ public final class DigestionCapability {
     public static class Provider implements ICapabilitySerializable<CompoundTag> {
 
         private final Digestion backend;
-        private final LazyOptional<Digestion> optional;
+        private LazyOptional<Digestion> optional;
 
         /** 传入 owner, 使数据层 setter 的溢出能广播 DigestionOverflowEvent */
         public Provider(Player owner) {
@@ -49,8 +49,16 @@ public final class DigestionCapability {
             backend.deserializeNBT(nbt);
         }
 
+        /**
+         * 失效即重建。Forge 在实体从世界移除(含跨维度传送 removePlayerImmediately →
+         * Entity.remove → invalidateCaps)时执行这里注册的失效回调; 而 revive() 只会把
+         * valid 翻回 true, 不会重建 Provider 或恢复已失效的 LazyOptional。LazyOptional
+         * 一但 invalidate() 便永久不可用, 因此必须先丢弃旧实例, 再立即创建一个新实例,
+         * 否则维度变更后该实体的 getCapability 永远返回 null (表现为"吃东西不加消化值")。
+         */
         public void invalidate() {
             optional.invalidate();
+            optional = LazyOptional.of(() -> backend);
         }
     }
 }

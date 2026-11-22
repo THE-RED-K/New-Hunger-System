@@ -7,13 +7,15 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.util.Mth;
+import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.player.Player;
-import net.minecraft.world.food.FoodProperties;
 import net.minecraft.world.item.ItemStack;
 import net.minecraftforge.client.gui.overlay.ForgeGui;
 import net.minecraftforge.client.gui.overlay.IGuiOverlay;
+import net.minecraftforge.common.MinecraftForge;
 
 import java.util.Random;
+import java.util.Vector;
 
 /**
  * 消化值 HUD: 在原版饥饿条正上方一行 (行距 10px, 与护甲相对生命一致) 绘制消化条。
@@ -32,19 +34,38 @@ public class DigestionOverlay implements IGuiOverlay {
 
     public static final DigestionOverlay INSTANCE = new DigestionOverlay();
 
-    /** 64x128 图集 (scripts/gen_stomach_icons.py 生成) */
-    private static final ResourceLocation TEXTURE =
+    /** 每帧预生成的逐格胃图标偏移 (供外部 HUD 对齐叠加层；AppleSkin foodBarOffsets 同款) */
+    public static final Vector<IntPoint> foodBarOffsets = new Vector<>();
+
+    /** 96x128 图集 (scripts/gen_stomach_icons.py 生成) */
+    public static final ResourceLocation TEXTURE =
             ResourceLocation.fromNamespaceAndPath(NewHungerSystem.MOD_ID, "textures/gui/stomach_icons.png");
 
     private static final int ICON = 9;    // 绘制尺寸 = 原版饥饿图标大小
     private static final int STEP = 8;    // 图标间距 = 原版 (10 格条总宽 81px)
-    private static final int TILE = 16;   // 图集源图块尺寸
+    public static final int TILE = 16;   // 图集源图块尺寸
     private static final int ROW = 10;    // 原版 HUD 行距
-    private static final int U_FULL = 0;
-    private static final int U_HALF = 16;
-    private static final int U_EMPTY = 32;
-    private static final int V_DIGEST = 0;
-    private static final int V_SAT = 16;
+    public static final int U_FULL = 0;
+    public static final int U_HALF = 16;
+    public static final int U_EMPTY = 32;
+    /** 消化饱和度四档 (与 AppleSkin 的 1/4、1/2、3/4、1 档位一致)，另加空格 */
+    public static final int U_SAT_QUARTER = 0;
+    public static final int U_SAT_HALF = 16;
+    public static final int U_SAT_THREE_QUARTER = 32;
+    public static final int U_SAT_FULL = 48;
+    public static final int U_SAT_EMPTY = 64;
+    public static final int V_DIGEST = 0;
+    public static final int V_SAT = 16;
+    /** 腐坏/有害食物: 与正常行同 U 偏移，只是换到暗绿整行 (AppleSkin rotten shank 同款切换) */
+    public static final int V_ROTTEN_DIGEST = 80;
+    private static final int V_ROTTEN_POPUP_RED = 96;
+    /** 消耗值底栏: AppleSkin mod_icons 同款 81x9 深灰条, 绘制时从右端截 width 像素 */
+    public static final int U_EXHAUSTION = 0;
+    public static final int V_EXHAUSTION = 112;
+    public static final int EXHAUSTION_WIDTH = 81;
+    public static final int EXHAUSTION_HEIGHT = 9;
+    public static final int TEXTURE_WIDTH = 96;
+    public static final int TEXTURE_HEIGHT = 128;
     private static final int V_POPUP_RED = 32;
     private static final int V_POPUP_YELLOW = 48;
 
@@ -97,7 +118,10 @@ public class DigestionOverlay implements IGuiOverlay {
     public void render(ForgeGui gui, GuiGraphics graphics, float partialTick, int screenWidth, int screenHeight) {
         Minecraft mc = gui.getMinecraft();
         Player player = mc.player;
-        if (player == null || !gui.shouldDrawSurvivalElements()) {
+        // 与 AppleSkin 的 FOOD_LEVEL overlay 门槛一致: hideGui / 骑乘生物 / 非生存元素时不画
+        // (骑乘时原版饥饿条也隐藏，本条消化条作为它的附属行必须一起让位)
+        if (player == null || mc.options.hideGui || !gui.shouldDrawSurvivalElements()
+                || player.getVehicle() instanceof LivingEntity) {
             return;
         }
         gui.setupOverlayRenderState(true, false);
@@ -117,28 +141,45 @@ public class DigestionOverlay implements IGuiOverlay {
         if (animate) {
             random.setSeed(ticks * 312871L);
         }
+        // AppleSkin generateHungerBarOffsets: 每帧按格预生成一次偏移表，底条/值层/popup 共用，
+        // 保证预显层与下面的图标严丝合缝地一起抖 (不再各自 nextInt)。
+        int icons = barIcons();
+        if (foodBarOffsets.size() != icons) {
+            foodBarOffsets.setSize(icons);
+        }
+        for (int i = 0; i < icons; i++) {
+            IntPoint point = foodBarOffsets.get(i);
+            if (point == null) {
+                point = new IntPoint();
+                foodBarOffsets.set(i, point);
+            }
+            point.x = -ICON - i * STEP;
+            point.y = animate ? random.nextInt(3) - 1 : 0;
+        }
 
         // ---- 单行: 消化值 (整格胃) + 消化饱和度 (同行黄色图标, 仿原版饱和度叠在饥饿行的画法) ----
-        drawBar(graphics, xRight, digestY, digestion, V_DIGEST, animate);
-        if (ClientConfig.showSaturationOverlay() && digestionSat > 0.0F) {
-            drawValueIcons(graphics, xRight, digestY, digestionSat, V_SAT, animate);
+        HUDOverlayEvent.Saturation saturationEvent = new HUDOverlayEvent.Saturation(
+                digestionSat, xRight, digestY, graphics);
+        boolean drawSaturation = ClientConfig.showSaturationOverlay() && digestionSat > 0.0F
+                && !MinecraftForge.EVENT_BUS.post(saturationEvent);
+        drawBar(graphics, xRight, digestY, digestion, V_DIGEST);
+        if (drawSaturation) {
+            drawValueIcons(graphics, xRight, digestY, digestionSat, V_SAT);
         }
         gui.rightHeight += ROW;                          // 仅占一行 (氧气条等自动上移)
 
         // ---- 回复预显 (AppleSkin 完整仿制): 红=消化值增量, 黄=消化饱和度增量, 闪烁 ----
-        ItemStack heldFood = ClientConfig.showFoodValuesOverlay() ? getHeldFoodStack(player) : ItemStack.EMPTY;
-        FoodProperties food = heldFood.isEmpty() ? null : heldFood.getItem().getFoodProperties(heldFood, player);
-        if (food == null) {
+        ItemStack heldFood = ClientConfig.showFoodValuesOverlay() ? FoodHelper.getHeldFoodStack(player) : ItemStack.EMPTY;
+        // 客户端显示值事件 (AppleSkin FoodValuesEvent 同款): 客户端模组可按物品改写 HUD 预显值
+        FoodValuesEvent valuesEvent = heldFood.isEmpty() ? null : FoodHelper.postFoodValuesEvent(player, heldFood);
+        if (valuesEvent == null) {
             resetFlash();
         } else {
-            // 与 onUseItemFinish 的取值优先级保持一致: 配置覆盖 > 代码登记 > nutrition * digestionPerNutrition,
-            // 否则改倍率/加覆盖后 HUD 预显会和实际增益对不上
-            Float override = FoodDigestionValues.resolve(heldFood);
-            float potential = override != null
-                    ? override
-                    : Math.max(0.0F, food.getNutrition() * HungerConfig.digestionPerNutrition());
-            // 消化饱和度部分与 onUseItemFinish 一致: gain × saturationModifier × 2
-            float potentialSat = Math.max(0.0F, potential * food.getSaturationModifier() * 2.0F);
+            // 腐肉/河豚等带 HARMFUL 效果的食物用整套 rotten 贴图 (仿 AppleSkin FoodHelper.isRotten)
+            boolean rotten = FoodHelper.isRotten(heldFood, player);
+            int popupV = rotten ? V_ROTTEN_POPUP_RED : V_POPUP_RED;
+            float potential = Math.max(0.0F, valuesEvent.modifiedFoodValues.digestion);
+            float potentialSat = Math.max(0.0F, valuesEvent.modifiedFoodValues.digestionSaturation);
             float digGain = Math.max(0.0F, Math.min(potential, Digestion.maxDigestion() - digestion));
             float satCap = Math.min(Digestion.maxDigestionSaturation(), digestion + digGain);
             float satGain = Math.max(0.0F, Math.min(potentialSat, satCap - digestionSat));
@@ -146,32 +187,42 @@ public class DigestionOverlay implements IGuiOverlay {
                 resetFlash();
             } else {
                 if (digGain > 0.0F) {
-                    float modified = digestion + digGain;
-                    // 上限 > 20 时条已画满, 起点会超出可视格数 → clamp 到最后一格,
-                    // 让"还能继续加消化值"的信号仍然可见, 而不是整个预显消失
-                    int icons = barIcons();
-                    int startBar = Math.min(icons - 1, (int) (digestion / 2.0F));
-                    int endBar = Math.min(icons, Mth.ceil(modified / 2.0F));
-                    enableAlpha(flashAlpha);
-                    for (int i = startBar; i < endBar; i++) {
-                        int x = xRight - ICON - i * STEP;
-                        int y = digestY + (animate ? random.nextInt(3) - 1 : 0);
-                        int u = modified - i * 2.0F >= 2.0F ? U_FULL : U_HALF;
-                        graphics.blit(TEXTURE, x, y, ICON, ICON, u, V_POPUP_RED, TILE, TILE, 64, 128);
+                    HUDOverlayEvent.HungerRestored hungerEvent = new HUDOverlayEvent.HungerRestored(
+                            digestion, heldFood, valuesEvent.modifiedFoodValues, xRight, digestY, graphics);
+                    if (!MinecraftForge.EVENT_BUS.post(hungerEvent)) {
+                        float modified = digestion + digGain;
+                        // 上限 > 20 时条已画满, 起点会超出可视格数 → clamp 到最后一格,
+                        // 让"还能继续加消化值"的信号仍然可见, 而不是整个预显消失
+                        int startBar = Math.min(icons - 1, (int) (digestion / 2.0F));
+                        int endBar = Math.min(icons, Mth.ceil(modified / 2.0F));
+                        int baseV = rotten ? V_ROTTEN_DIGEST : V_DIGEST;
+                        enableAlpha(flashAlpha);
+                        for (int i = startBar; i < endBar; i++) {
+                            IntPoint offset = foodBarOffsets.get(i);
+                            int x = xRight + offset.x;
+                            int y = digestY + offset.y;
+                            int u = modified - i * 2.0F >= 2.0F ? U_FULL : U_HALF;
+                            // AppleSkin drawHungerOverlay: 25% 底 + 全透明描边 = 空心轮廓感
+                            RenderSystem.setShaderColor(1.0F, 1.0F, 1.0F, flashAlpha * 0.25F);
+                            graphics.blit(TEXTURE, x, y, ICON, ICON, U_EMPTY, baseV, TILE, TILE, TEXTURE_WIDTH, TEXTURE_HEIGHT);
+                            RenderSystem.setShaderColor(1.0F, 1.0F, 1.0F, flashAlpha);
+                            graphics.blit(TEXTURE, x, y, ICON, ICON, u, popupV, TILE, TILE, TEXTURE_WIDTH, TEXTURE_HEIGHT);
+                        }
+                        disableAlpha();
                     }
-                    disableAlpha();
                 }
                 if (satGain > 0.0F) {
                     float modified = digestionSat + satGain;
-                    int icons = barIcons();
                     int startBar = Math.min(icons - 1, (int) (digestionSat / 2.0F));
                     int endBar = Math.min(icons, Mth.ceil(modified / 2.0F));
+                    // 饱和度 popup 按 AppleSkin drawSaturationOverlay 单层绘制，不叠底
                     enableAlpha(flashAlpha);
                     for (int i = startBar; i < endBar; i++) {
-                        int x = xRight - ICON - i * STEP;
-                        int y = digestY + (animate ? random.nextInt(3) - 1 : 0);
+                        IntPoint offset = foodBarOffsets.get(i);
+                        int x = xRight + offset.x;
+                        int y = digestY + offset.y;
                         int u = modified - i * 2.0F >= 2.0F ? U_FULL : U_HALF;
-                        graphics.blit(TEXTURE, x, y, ICON, ICON, u, V_POPUP_YELLOW, TILE, TILE, 64, 128);
+                        graphics.blit(TEXTURE, x, y, ICON, ICON, u, V_POPUP_YELLOW, TILE, TILE, TEXTURE_WIDTH, TEXTURE_HEIGHT);
                     }
                     disableAlpha();
                 }
@@ -206,47 +257,51 @@ public class DigestionOverlay implements IGuiOverlay {
         return Mth.clamp(Mth.ceil(Digestion.maxDigestion() / 2.0F), 1, 10);
     }
 
-    /** 消化值条: 先画空底, 再按数值画半/满 (每格 2 点); animate 时每格随机上下 1px (原版抖动) */
-    private void drawBar(GuiGraphics graphics, int xRight, int y, float value, int v, boolean animate) {
-        for (int i = 0; i < barIcons(); i++) {
-            int x = xRight - ICON - i * STEP;
-            int iconY = y + (animate ? random.nextInt(3) - 1 : 0);
-            graphics.blit(TEXTURE, x, iconY, ICON, ICON, U_EMPTY, v, TILE, TILE, 64, 128);
+    /** 消化值条: 先画空底, 再按数值画半/满 (每格 2 点); 偏移读公共 foodBarOffsets */
+    private void drawBar(GuiGraphics graphics, int xRight, int y, float value, int v) {
+        for (int i = 0; i < foodBarOffsets.size(); i++) {
+            IntPoint offset = foodBarOffsets.get(i);
+            int x = xRight + offset.x;
+            int iconY = y + offset.y;
+            graphics.blit(TEXTURE, x, iconY, ICON, ICON, U_EMPTY, v, TILE, TILE, TEXTURE_WIDTH, TEXTURE_HEIGHT);
         }
-        drawValueIcons(graphics, xRight, y, value, v, animate);
+        drawValueIcons(graphics, xRight, y, value, v);
     }
 
     /** 只画值图标 (无空底), 供消化饱和度同行叠加 (仿 AppleSkin 饱和度 overlay, 不画 empty 底) */
-    private void drawValueIcons(GuiGraphics graphics, int xRight, int y, float value, int v, boolean animate) {
-        for (int i = 0; i < barIcons(); i++) {
-            int x = xRight - ICON - i * STEP;
-            int iconY = y + (animate ? random.nextInt(3) - 1 : 0);
+    private void drawValueIcons(GuiGraphics graphics, int xRight, int y, float value, int v) {
+        for (int i = 0; i < foodBarOffsets.size(); i++) {
+            IntPoint offset = foodBarOffsets.get(i);
+            int x = xRight + offset.x;
+            int iconY = y + offset.y;
             float remaining = value - i * 2.0F;
-            if (remaining >= 2.0F) {
-                graphics.blit(TEXTURE, x, iconY, ICON, ICON, U_FULL, v, TILE, TILE, 64, 128);
+            int u;
+            if (v == V_SAT) {
+                // AppleSkin drawSaturationOverlay 的四档阈值: >=1 / >0.5 / >0.25 / >0（按每格 2 点换算）
+                if (remaining >= 2.0F) {
+                    u = U_SAT_FULL;
+                } else if (remaining > 1.0F) {
+                    u = U_SAT_THREE_QUARTER;
+                } else if (remaining > 0.5F) {
+                    u = U_SAT_HALF;
+                } else if (remaining > 0.0F) {
+                    u = U_SAT_QUARTER;
+                } else {
+                    continue;
+                }
+            } else if (remaining >= 2.0F) {
+                u = U_FULL;
             } else if (remaining >= 0.5F) {
-                graphics.blit(TEXTURE, x, iconY, ICON, ICON, U_HALF, v, TILE, TILE, 64, 128);
+                u = U_HALF;
+            } else {
+                continue;
             }
+            graphics.blit(TEXTURE, x, iconY, ICON, ICON, u, v, TILE, TILE, TEXTURE_WIDTH, TEXTURE_HEIGHT);
         }
     }
 
     /** 左对齐绘制数字 (带阴影), y 支持小数以对齐 AP++ 的 +0.5 亚像素 */
     private void drawNumber(GuiGraphics graphics, Minecraft mc, String text, float x, float y, int color) {
         graphics.drawString(mc.font, text, x, y, color, true);
-    }
-
-    /** 手持(主手优先)的食物物品栈; 两手都不是食物时返回 {@link ItemStack#EMPTY} */
-    private ItemStack getHeldFoodStack(Player player) {
-        ItemStack mainHand = player.getMainHandItem();
-        if (mainHand.getItem().getFoodProperties(mainHand, player) != null) {
-            return mainHand;
-        }
-        if (ClientConfig.offhand()) {
-            ItemStack offHand = player.getOffhandItem();
-            if (offHand.getItem().getFoodProperties(offHand, player) != null) {
-                return offHand;
-            }
-        }
-        return ItemStack.EMPTY;
     }
 }

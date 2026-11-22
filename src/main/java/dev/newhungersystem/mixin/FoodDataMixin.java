@@ -5,10 +5,13 @@ import dev.newhungersystem.api.DigestionCapability;
 import dev.newhungersystem.api.HungerConfig;
 import dev.newhungersystem.api.ModAttributes;
 import dev.newhungersystem.api.StatFactors;
+import dev.newhungersystem.NewHungerSystem;
 import net.minecraft.world.Difficulty;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.food.FoodData;
 import net.minecraft.world.level.GameRules;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Overwrite;
 import org.spongepowered.asm.mixin.Shadow;
@@ -21,6 +24,10 @@ import static dev.newhungersystem.api.MixinPriorities.TAKE_OVER_FINAL;
  */
 @Mixin(value = FoodData.class, priority = TAKE_OVER_FINAL)
 public abstract class FoodDataMixin {
+
+    /** 临时诊断 (排查整合包兼容问题时启用, 排查完毕后移除) */
+    private static final Logger DIAG = LoggerFactory.getLogger(NewHungerSystem.MOD_ID + ".diag");
+    private static int TICK_COUNT;
 
     @Shadow
     private int foodLevel;
@@ -51,6 +58,12 @@ public abstract class FoodDataMixin {
     public void tick(Player player) {
         // 原版在这里记录 lastFoodLevel, 供原版饥饿条的变化动画使用
         this.lastFoodLevel = this.foodLevel;
+
+        // 临时诊断: 每 10 秒采样一次原版 tick 行为是否在跑
+        if (++TICK_COUNT % 200 == 0) {
+            DIAG.info("[DIAG] FoodData.tick ALIVE #{} player={} food=({}|{}) exc={}", TICK_COUNT,
+                    player.getScoreboardName(), this.foodLevel, this.saturationLevel, this.exhaustionLevel);
+        }
 
         // 消耗/饥饿衰减 (沿用原版, maxExhaustion 可配置; 原版判定是严格大于 4.0F)
         float maxExhaustion = HungerConfig.maxExhaustion();
@@ -129,8 +142,12 @@ public abstract class FoodDataMixin {
     @Overwrite
     public void eat(int foodLevelIn, float saturationLevelIn) {
         float maxHunger = StatFactors.maxHunger();
+        float satBefore = this.saturationLevel;
+        int foodBefore = this.foodLevel;
         this.foodLevel = (int) Math.min((double) foodLevelIn + this.foodLevel, (double) maxHunger);
         this.saturationLevel = Math.min(this.saturationLevel + saturationLevelIn, this.foodLevel);
+        DIAG.info("[DIAG] FoodData.eat +{} / +{} : ({}, {}) -> ({}, {})", foodLevelIn, saturationLevelIn,
+                foodBefore, satBefore, this.foodLevel, this.saturationLevel);
     }
 
     /**

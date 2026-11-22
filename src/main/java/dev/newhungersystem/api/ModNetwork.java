@@ -17,12 +17,14 @@ import java.util.Optional;
  */
 public final class ModNetwork {
 
-    /** 协议版本: 同步包改为携带服务端权威上限后升到 1.2.0, 版本不一致会直接拒绝连接而不是解析错位 */
     public static final SimpleChannel CHANNEL = NetworkRegistry.newSimpleChannel(
             ResourceLocation.fromNamespaceAndPath(NewHungerSystem.MOD_ID, "main"),
             () -> "1.2.0",
             "1.2.0"::equals,
             "1.2.0"::equals);
+
+    /** 临时诊断: syncTo 调用计数, 避免刷屏 */
+    private static final java.util.concurrent.atomic.AtomicLong SYNC_COUNT = new java.util.concurrent.atomic.AtomicLong();
 
     private ModNetwork() {
     }
@@ -38,6 +40,8 @@ public final class ModNetwork {
     public static void syncTo(ServerPlayer player) {
         Digestion digestion = player.getCapability(DigestionCapability.DIGESTION).orElse(null);
         if (digestion == null) {
+            org.slf4j.LoggerFactory.getLogger(NewHungerSystem.MOD_ID + ".diag")
+                    .info("[DIAG] syncTo {} NO_CAPABILITY", player.getScoreboardName());
             return;
         }
         CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
@@ -45,5 +49,11 @@ public final class ModNetwork {
                         player.getFoodData().getExhaustionLevel(),
                         HungerConfig.serverMaxHunger(), HungerConfig.serverMaxSaturation(),
                         HungerConfig.serverMaxDigestion(), HungerConfig.serverMaxDigestionSaturation()));
+        long n = SYNC_COUNT.incrementAndGet();
+        if (n <= 20 || n % 500 == 0) {
+            org.slf4j.LoggerFactory.getLogger(NewHungerSystem.MOD_ID + ".diag")
+                    .info("[DIAG] syncTo #{} player={} dig=({}|{})", n, player.getScoreboardName(),
+                            digestion.getDigestion(), digestion.getDigestionSaturation());
+        }
     }
 }

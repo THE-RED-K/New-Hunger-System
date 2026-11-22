@@ -14,6 +14,7 @@ import dev.newhungersystem.api.ModMobEffects;
 import dev.newhungersystem.api.ModNetwork;
 import dev.newhungersystem.api.ModPotions;
 import dev.newhungersystem.api.OverflowCacheHandler;
+import dev.newhungersystem.api.TooltipOverlayHandler;
 import dev.newhungersystem.compat.AppleSkinCompat;
 import net.minecraftforge.client.event.RegisterGuiOverlaysEvent;
 import net.minecraftforge.client.gui.overlay.VanillaGuiOverlay;
@@ -65,9 +66,12 @@ public class NewHungerSystem {
         event.enqueueWork(ModNetwork::register);
     }
 
-    /** 客户端专属事件 (消耗值底栏 / F3 调试行 / 闪烁计时) 只在此注册, 避免服务端加载客户端类 */
+    /** 客户端专属事件 (消耗值底栏 / F3 调试行 / 闪烁计时 / 物品 Tooltip) 只在此注册, 避免服务端加载客户端类 */
     private void clientSetup(final FMLClientSetupEvent event) {
         MinecraftForge.EVENT_BUS.register(ClientHudEvents.class);
+        // 物品 Tooltip 食物值: MOD 总线注册组件工厂 + Forge 总线收集 GatherComponents 事件
+        FMLJavaModLoadingContext.get().getModEventBus().addListener(TooltipOverlayHandler::register);
+        MinecraftForge.EVENT_BUS.register(TooltipOverlayHandler.class);
         // 软兼容: 装了 AppleSkin 时按配置取消它的 HUD overlay 事件
         AppleSkinCompat.register();
     }

@@ -6,9 +6,12 @@ import dev.newhungersystem.api.Digestion;
 import dev.newhungersystem.api.DigestionCapability;
 import dev.newhungersystem.api.HungerConfig;
 import dev.newhungersystem.api.ModNetwork;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.util.Mth;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.entity.Entity;
@@ -55,6 +58,22 @@ public final class DigestionEvents {
     /** 进食期间记录的 FoodData 快照 {foodLevel, saturationLevel}, 用于还原原版直接加的数值 */
     private static final Map<UUID, float[]> EAT_SNAPSHOTS = new HashMap<>();
 
+    /** 临时诊断日志 (定位整合包兼容问题时启用, 排查完毕后移除) */
+    private static final Logger DIAG = LoggerFactory.getLogger(NewHungerSystem.MOD_ID + ".diag");
+
+    private static void diag(String fmt, Object... args) {
+        DIAG.info("[DIAG] " + fmt, args);
+    }
+
+    private static void diagDbg(String fmt, Object... args) {
+        DIAG.debug("[DIAG] " + fmt, args);
+    }
+
+    /** 物品注册名, 便于在日志里分辨食物种类 */
+    private static String itemId(net.minecraft.world.entity.LivingEntity player, net.minecraft.world.item.ItemStack stack) {
+        return BuiltInRegistries.ITEM.getKey(stack.getItem()).toString();
+    }
+
     /** 各属性修饰器 UUID (MULTIPLY_TOTAL, value=factor-1) */
     private static final UUID UUID_ATTACK = UUID.fromString("c0a1b2c3-0001-4d00-8000-0000000000a1");
     private static final UUID UUID_ATK_SPD = UUID.fromString("c0a1b2c3-0002-4d00-8000-0000000000a2");
@@ -69,6 +88,10 @@ public final class DigestionEvents {
     @SubscribeEvent
     public static void onAttachCapabilities(AttachCapabilitiesEvent<Entity> event) {
         if (event.getObject() instanceof Player player) {
+            // 注意: AttachCapabilitiesEvent 在玩家实体构造中途触发, gameProfile 尚未初始化,
+            // 此时调用 getScoreboardName()/getGameProfile() 会 NPE, 只能用类名/type 等安全标识
+            diag("attach caps class={} side={}", player.getType().getDescription().getString(),
+                    player.level().isClientSide() ? "CLIENT" : "SERVER");
             DigestionCapability.Provider provider = new DigestionCapability.Provider(player);
             event.addCapability(ResourceLocation.fromNamespaceAndPath(NewHungerSystem.MOD_ID, "digestion"),
                     provider);
@@ -138,6 +161,11 @@ public final class DigestionEvents {
         if (food != null) {
             FoodData data = player.getFoodData();
             EAT_SNAPSHOTS.put(player.getUUID(), new float[]{data.getFoodLevel(), data.getSaturationLevel()});
+            diag("EAT-START {} player={} food=({},{}) sat={}", itemId(player, event.getItem()),
+                    player.getScoreboardName(), data.getFoodLevel(), data.getSaturationLevel());
+        } else {
+            diag("EAT-START {} player={} NO_FOOD_PROPS", itemId(player, event.getItem()),
+                    player.getScoreboardName());
         }
     }
 
@@ -153,23 +181,33 @@ public final class DigestionEvents {
         if (event.getEntity().level().isClientSide() || !(event.getEntity() instanceof ServerPlayer player)) {
             return;
         }
+        String item = itemId(player, event.getItem());
+        FoodData data = player.getFoodData();
         float[] snapshot = EAT_SNAPSHOTS.remove(player.getUUID());
         if (snapshot == null) {
+            diag("EAT-FINISH {} player={} NO_SNAPSHOT (Start never ran!) food=({},{})", item,
+                    player.getScoreboardName(), data.getFoodLevel(), data.getSaturationLevel());
             return;
         }
-        FoodData data = player.getFoodData();
         data.setFoodLevel((int) snapshot[0]);                 // 还原原版直接加的饥饿值
         data.setSaturation(snapshot[1]);                      // 还原原版直接加的饱和度
+        diag("EAT-FINISH {} player={} restored food=({}|{}) snapshot-was=({}|{})", item,
+                player.getScoreboardName(), data.getFoodLevel(), data.getSaturationLevel(),
+                (int) snapshot[0], snapshot[1]);
         // 修复: 饥饿值已满时原版 eat 不产生增量 (旧逻辑据此提前 return 导致吃食物不加消化值)。
         // 改为直接取食物营养值, 只要消化值/消化饱和度还有空间就照常等量增加。
         FoodProperties food = event.getItem().getItem().getFoodProperties(event.getItem(), player);
         if (food == null) {
+            diag("EAT-FINISH {} player={} NO_FOOD_PROPS", item, player.getScoreboardName());
             return;
         }
         Digestion digestion = player.getCapability(DigestionCapability.DIGESTION).orElse(null);
         if (digestion == null) {
+            diag("EAT-FINISH {} player={} NO_CAPABILITY!!!", item, player.getScoreboardName());
             return;
         }
+        float digBefore = digestion.getDigestion();
+        float dsBefore = digestion.getDigestionSaturation();
         // 取值优先级: 配置层覆盖 > 代码登记层 > nutrition * digestionPerNutrition(默认 1:1)
         // 三层都算完后再广播 FoodDigestionEvent, 监听器拿到的就是最终默认值, 仍可继续改写/取消
         Float override = FoodDigestionValues.resolve(event.getItem());
@@ -180,8 +218,12 @@ public final class DigestionEvents {
         //   saturationLevel += nutrition × saturationModifier × 2.0F
         // 这里把 "nutrition" 换成上面解析出的消化值增益, 因此饱和比例跟随倍率/覆盖值一起缩放。
         float defaultSatGain = Math.max(0.0F, gain * food.getSaturationModifier() * 2.0F);
+        diag("EAT-FINISH {} player={} gain=({}|{}) nutrition={} satmod={} override={} dig:({}|{})", item,
+                player.getScoreboardName(), gain, defaultSatGain, food.getNutrition(),
+                food.getSaturationModifier(), override, digBefore, dsBefore);
         FoodDigestionEvent foodEvent = new FoodDigestionEvent(player, event.getItem(), food, gain, defaultSatGain);
-        if (!MinecraftForge.EVENT_BUS.post(foodEvent)) {
+        boolean cancelled = MinecraftForge.EVENT_BUS.post(foodEvent);
+        if (!cancelled) {
             float digestionGain = Math.max(0.0F, foodEvent.getDigestion());
             float satGain = Math.max(0.0F, foodEvent.getDigestionSaturation());
             if (digestionGain != 0.0F) {
@@ -191,6 +233,8 @@ public final class DigestionEvents {
                 DigestionHelper.addDigestionSaturation(player, satGain);
             }
         }
+        diag("EAT-FINISH {} player={} cancelled={} dig:({}|{} -> {}|{})", item, player.getScoreboardName(),
+                cancelled, digBefore, dsBefore, digestion.getDigestion(), digestion.getDigestionSaturation());
         updateStats(player, digestion);
         ModNetwork.syncTo(player);
     }
@@ -288,6 +332,10 @@ public final class DigestionEvents {
 
         // 每 0.5s: 转化 / 属性更新 / 呕吐检测
         if (player.tickCount % 10 == 0) {
+            diagDbg("TICK10 t={} player={} food=({}|{}) exc={} dig=({}|{}) carry={}", player.tickCount,
+                    player.getScoreboardName(), data.getFoodLevel(), data.getSaturationLevel(),
+                    exhaustion, digestion.getDigestion(), digestion.getDigestionSaturation(),
+                    digestion.getFoodCarry());
             // 速率受药水效果影响: 助消化每级 +20%, 消化不良每级 -20% (互相抵消, 下限 0),
             // 瞬间消化在此基础上再 ×10 (叠乘)。仍走同一条转化路径, 只是每次转得更多, 所以不会出现"一次清空"
             float rate = HungerConfig.BASE_DIGESTION_RATE.get().floatValue()
@@ -308,6 +356,9 @@ public final class DigestionEvents {
                         digestion.setDigestionSaturation(digestion.getDigestionSaturation() - add);
                         data.setSaturation(data.getSaturationLevel() + add);
                         sync = true;
+                        diagDbg("TICK10 CONV-DS add={} new food=({}|{}) dig=({}|{})", add,
+                                data.getFoodLevel(), data.getSaturationLevel(),
+                                digestion.getDigestion(), digestion.getDigestionSaturation());
                     }
                 }
             }
@@ -335,6 +386,9 @@ public final class DigestionEvents {
                         }
                         digestion.setFoodCarry(carry);
                         sync = true;
+                        diagDbg("TICK10 CONV-DIG add={} new food=({}|{}) dig=({}|{})", transfer,
+                                data.getFoodLevel(), data.getSaturationLevel(),
+                                digestion.getDigestion(), digestion.getDigestionSaturation());
                     }
                 }
             }
