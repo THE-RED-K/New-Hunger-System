@@ -26,6 +26,7 @@ import net.minecraftforge.fml.config.ModConfig;
 import net.minecraftforge.fml.event.lifecycle.FMLClientSetupEvent;
 import net.minecraftforge.fml.event.lifecycle.FMLCommonSetupEvent;
 import net.minecraftforge.fml.javafmlmod.FMLJavaModLoadingContext;
+import net.minecraftforge.fml.loading.FMLEnvironment;
 
 // 此值须与 gradle.properties 中的 mod_id 及 META-INF/mods.toml 中的 modId 一致
 @Mod(NewHungerSystem.MOD_ID)
@@ -44,6 +45,12 @@ public class NewHungerSystem {
         modEventBus.addListener(this::clientSetup);
         modEventBus.addListener(this::registerCapabilities);
         modEventBus.addListener(this::registerOverlays);
+        // Tooltip 自定义组件工厂必须在 RegisterClientTooltipComponentFactoriesEvent 之前注册。
+        // 该事件早于 FMLClientSetupEvent；若放到 clientSetup 里注册监听器就永远不会触发，
+        // 悬停食物时会因找不到 FoodTooltip 的客户端工厂而抛 Unknown TooltipComponent。
+        if (FMLEnvironment.dist.isClient()) {
+            modEventBus.addListener(TooltipOverlayHandler::register);
+        }
         // 配置加载/重载: 重建 per-item 覆盖表 + 把在线玩家收敛到新上限
         modEventBus.register(FoodDigestionValues.class);
         // 自定义属性 (hunger_efficiency / digestion_efficiency) + 挂到玩家
@@ -69,8 +76,7 @@ public class NewHungerSystem {
     /** 客户端专属事件 (消耗值底栏 / F3 调试行 / 闪烁计时 / 物品 Tooltip) 只在此注册, 避免服务端加载客户端类 */
     private void clientSetup(final FMLClientSetupEvent event) {
         MinecraftForge.EVENT_BUS.register(ClientHudEvents.class);
-        // 物品 Tooltip 食物值: MOD 总线注册组件工厂 + Forge 总线收集 GatherComponents 事件
-        FMLJavaModLoadingContext.get().getModEventBus().addListener(TooltipOverlayHandler::register);
+        // 物品 Tooltip 食物值: 组件工厂已在构造函数注册，这里只注册 GatherComponents 收集器
         MinecraftForge.EVENT_BUS.register(TooltipOverlayHandler.class);
         // 软兼容: 装了 AppleSkin 时按配置取消它的 HUD overlay 事件
         AppleSkinCompat.register();

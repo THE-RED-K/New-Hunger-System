@@ -7,6 +7,7 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.util.Mth;
+import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
@@ -162,7 +163,9 @@ public class DigestionOverlay implements IGuiOverlay {
                 digestionSat, xRight, digestY, graphics);
         boolean drawSaturation = ClientConfig.showSaturationOverlay() && digestionSat > 0.0F
                 && !MinecraftForge.EVENT_BUS.post(saturationEvent);
-        drawBar(graphics, xRight, digestY, digestion, V_DIGEST);
+        // 与原版饥饿条一致: 玩家有 Hunger 效果时整条换成暗绿病态图标
+        int digestV = player.hasEffect(MobEffects.HUNGER) ? V_ROTTEN_DIGEST : V_DIGEST;
+        drawBar(graphics, xRight, digestY, digestion, digestV);
         if (drawSaturation) {
             drawValueIcons(graphics, xRight, digestY, digestionSat, V_SAT);
         }

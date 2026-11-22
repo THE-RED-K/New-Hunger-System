@@ -20,9 +20,12 @@ public final class ClientConfig {
     public static final ForgeConfigSpec.BooleanValue SHOW_FOOD_VALUES_OVERLAY_WHEN_OFFHAND;
     /** 血条上显示进食 (消化链) 后预计可回复的血量 */
     public static final ForgeConfigSpec.BooleanValue SHOW_FOOD_HEALTH_HUD_OVERLAY;
-    /** 物品提示栏: 按住 SHIFT 时显示食物消化值/消化饱和度条 (仿 AppleSkin) */
+    /**
+     * 物品提示栏: 按住 SHIFT 时显示食物消化值/消化饱和度条 (仿 AppleSkin)。
+     * 默认关闭：原版/AppleSkin 的饥饿值与饱和度提示已能表达等价语义，额外一行是冗余的。
+     */
     public static final ForgeConfigSpec.BooleanValue SHOW_FOOD_VALUES_IN_TOOLTIP;
-    /** 物品提示栏: 无需按键始终显示 */
+    /** 物品提示栏: 无需按键始终显示消化值/消化饱和度条 (默认关闭，理由同上) */
     public static final ForgeConfigSpec.BooleanValue SHOW_FOOD_VALUES_IN_TOOLTIP_ALWAYS;
     /** 消耗值底栏 (81px, 画在饥饿条之下) */
     public static final ForgeConfigSpec.BooleanValue SHOW_FOOD_EXHAUSTION_UNDERLAY;
@@ -72,11 +75,14 @@ public final class ClientConfig {
                 .define("showFoodHealthHudOverlay", true);
         SHOW_FOOD_VALUES_IN_TOOLTIP = builder
                 .comment("If true, shows the digestion and digestion saturation restored by the food",
-                        "in its tooltip while holding SHIFT")
-                .define("showFoodValuesInTooltip", true);
+                        "in its tooltip while holding SHIFT.",
+                        "Default false: vanilla/AppleSkin hunger and saturation tooltips already express the same semantics,",
+                        "so the extra digestion row is redundant unless you explicitly want the raw digestion values.")
+                .define("showFoodValuesInTooltip", false);
         SHOW_FOOD_VALUES_IN_TOOLTIP_ALWAYS = builder
-                .comment("If true, the food digest values tooltip is always shown, without requiring SHIFT")
-                .define("showFoodValuesInTooltipAlways", true);
+                .comment("If true, the food digest values tooltip is always shown, without requiring SHIFT.",
+                        "Default false for the same redundancy reason as showFoodValuesInTooltip.")
+                .define("showFoodValuesInTooltipAlways", false);
         SHOW_FOOD_EXHAUSTION_UNDERLAY = builder
                 .comment("If true, shows your food exhaustion as a progress bar behind the hunger bars")
                 .define("showFoodExhaustionHudUnderlay", true);
