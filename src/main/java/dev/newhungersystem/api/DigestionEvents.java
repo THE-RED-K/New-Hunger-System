@@ -6,12 +6,9 @@ import dev.newhungersystem.api.Digestion;
 import dev.newhungersystem.api.DigestionCapability;
 import dev.newhungersystem.api.HungerConfig;
 import dev.newhungersystem.api.ModNetwork;
-import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.util.Mth;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.entity.Entity;
@@ -42,8 +39,10 @@ import java.util.UUID;
  * 消化系统事件处理:
  * 1. 给玩家附加 Digestion Capability 并处理转生/登入/维度切换同步
  * 2. 进食拦截: 吃食物获得等量消化值与消化饱和度, 而不是直接加饥饿值/饱和度
- * 3. 每 0.5s 按 baseDigestionRate 把消化值/消化饱和度转化为饥饿值/饱和度
- * 4. 阈值效果: 饥饿值<30% 惩罚攻/速/挖掘; 消化值>100% 惩罚攻/速/游泳/挖掘; >150% 呕吐
+ * 3. 每 0.5s 按 baseDigestionRate 把消化值/消化饱和度转化为饥饿值/饱和度;
+ *    消化值进入惩罚区(> digestionPenaltyStartPercent)后主转化按比例加速, 满值 ×1.5
+ * 4. 阈值效果: 饥饿值<30% 惩罚攻/速/挖掘; 消化过载惩罚攻/速/游泳/挖掘
+ *    (硬上限: 攻击力 -30%, 速度类 -60%); 到达呕吐阈值时呕吐
  * 5. 回血: 由 FoodDataMixin 接管 (保留原版 gamerule), 有饱和度时按曲线回血,
  *         饥饿值间接缩放回血量, 消化过载额外减速; 药水/金苹果等走 LivingHealEvent, 不在此列
  * <p>
@@ -57,22 +56,6 @@ public final class DigestionEvents {
 
     /** 进食期间记录的 FoodData 快照 {foodLevel, saturationLevel}, 用于还原原版直接加的数值 */
     private static final Map<UUID, float[]> EAT_SNAPSHOTS = new HashMap<>();
-
-    /** 临时诊断日志 (定位整合包兼容问题时启用, 排查完毕后移除) */
-    private static final Logger DIAG = LoggerFactory.getLogger(NewHungerSystem.MOD_ID + ".diag");
-
-    private static void diag(String fmt, Object... args) {
-        DIAG.info("[DIAG] " + fmt, args);
-    }
-
-    private static void diagDbg(String fmt, Object... args) {
-        DIAG.debug("[DIAG] " + fmt, args);
-    }
-
-    /** 物品注册名, 便于在日志里分辨食物种类 */
-    private static String itemId(net.minecraft.world.entity.LivingEntity player, net.minecraft.world.item.ItemStack stack) {
-        return BuiltInRegistries.ITEM.getKey(stack.getItem()).toString();
-    }
 
     /** 各属性修饰器 UUID (MULTIPLY_TOTAL, value=factor-1) */
     private static final UUID UUID_ATTACK = UUID.fromString("c0a1b2c3-0001-4d00-8000-0000000000a1");
@@ -88,10 +71,6 @@ public final class DigestionEvents {
     @SubscribeEvent
     public static void onAttachCapabilities(AttachCapabilitiesEvent<Entity> event) {
         if (event.getObject() instanceof Player player) {
-            // 注意: AttachCapabilitiesEvent 在玩家实体构造中途触发, gameProfile 尚未初始化,
-            // 此时调用 getScoreboardName()/getGameProfile() 会 NPE, 只能用类名/type 等安全标识
-            diag("attach caps class={} side={}", player.getType().getDescription().getString(),
-                    player.level().isClientSide() ? "CLIENT" : "SERVER");
             DigestionCapability.Provider provider = new DigestionCapability.Provider(player);
             event.addCapability(ResourceLocation.fromNamespaceAndPath(NewHungerSystem.MOD_ID, "digestion"),
                     provider);
@@ -126,7 +105,83 @@ public final class DigestionEvents {
             event.getEntity().getCapability(DigestionCapability.DIGESTION)
                     .ifPresent(Digestion::resetToStart);
         }
+        // 死亡损失 (四项各自独立, 默认全 0 = 关闭): 先按百分比扣减, 再做低饥饿保底
+        applyDeathStatLoss(event);
+        // 低饥饿死亡保底: 死前饥饿值低于阈值 → 复活补到阈值 (默认 30% maxHunger, 0 = 关闭)
+        applyStarvationRespawnFloor(event);
         event.getOriginal().invalidateCaps();
+    }
+
+    /**
+     * 死亡损失: 复活后的数值 = 进入复活流程时的数值 × (1 - pct%)。
+     * <p>
+     * 四项各自由独立配置控制, 默认全 0 即整个机制关闭。基准是"复活流程已确定的数值"——
+     * {@code keepHungerOnRespawn=true} 时是死前值, false 时是开局值。
+     * 消化值/消化饱和度都按<b>扣减前</b>的值计算百分比, 最后按 {@code sat <= digestion} 不变量 clamp。
+     */
+    private static void applyDeathStatLoss(PlayerEvent.Clone event) {
+        if (!event.isWasDeath()) {
+            return;
+        }
+        float hungerLoss = HungerConfig.deathHungerLossPercent();
+        float satLoss = HungerConfig.deathSaturationLossPercent();
+        float digLoss = HungerConfig.deathDigestionLossPercent();
+        float digSatLoss = HungerConfig.deathDigestionSaturationLossPercent();
+        if (hungerLoss <= 0.0F && satLoss <= 0.0F && digLoss <= 0.0F && digSatLoss <= 0.0F) {
+            return;   // 全 0 = 关闭
+        }
+
+        FoodData food = event.getEntity().getFoodData();
+        float sat = food.getSaturationLevel();
+        if (hungerLoss > 0.0F) {
+            food.setFoodLevel(Math.round(food.getFoodLevel() * (1.0F - hungerLoss / 100.0F)));
+        }
+        if (satLoss > 0.0F) {
+            sat *= 1.0F - satLoss / 100.0F;
+        }
+        food.setSaturation(Math.min(sat, food.getFoodLevel()));
+
+        Digestion digestion = event.getEntity().getCapability(DigestionCapability.DIGESTION).orElse(null);
+        if (digestion != null) {
+            float digSat = digestion.getDigestionSaturation();
+            if (digLoss > 0.0F) {
+                digestion.setDigestion(digestion.getDigestion() * (1.0F - digLoss / 100.0F));
+            }
+            if (digSatLoss > 0.0F) {
+                digSat *= 1.0F - digSatLoss / 100.0F;
+            }
+            // setter 内部会按 sat <= digestion 与自身上限 clamp
+            digestion.setDigestionSaturation(digSat);
+        }
+    }
+
+    /**
+     * 低饥饿死亡复活保底。
+     * <p>
+     * 死亡时 {@code foodLevel < maxHunger × starvationRespawnHungerPercent%} → 复活后把饥饿值补到该值。
+     * <b>同一个配置值同时是判定阈值与给予值</b>，所以调整时两边不会错位；配置为 0 时整个机制关闭。
+     * <p>
+     * 只抬高、不压低：{@code keepHungerOnRespawn=false} 且开局值高于保底时保持开局值。
+     * 补完后再把饱和度 clamp 回不超过饥饿值，维持原版 {@code sat <= foodLevel} 不变量。
+     */
+    private static void applyStarvationRespawnFloor(PlayerEvent.Clone event) {
+        if (!event.isWasDeath()) {
+            return;
+        }
+        float percent = HungerConfig.starvationRespawnHungerPercent();
+        if (percent <= 0.0F) {
+            return;   // 0% = 关闭 (否则阈值 0 永远不成立, 显式跳过更清楚)
+        }
+        float threshold = StatFactors.maxHunger() * percent / 100.0F;
+        if (event.getOriginal().getFoodData().getFoodLevel() >= threshold) {
+            return;   // 死亡时并未低于阈值
+        }
+        FoodData newFood = event.getEntity().getFoodData();
+        int floor = Math.round(threshold);
+        if (newFood.getFoodLevel() < floor) {
+            newFood.setFoodLevel(floor);
+        }
+        newFood.setSaturation(Math.min(newFood.getSaturationLevel(), newFood.getFoodLevel()));
     }
 
     @SubscribeEvent
@@ -161,11 +216,6 @@ public final class DigestionEvents {
         if (food != null) {
             FoodData data = player.getFoodData();
             EAT_SNAPSHOTS.put(player.getUUID(), new float[]{data.getFoodLevel(), data.getSaturationLevel()});
-            diag("EAT-START {} player={} food=({},{}) sat={}", itemId(player, event.getItem()),
-                    player.getScoreboardName(), data.getFoodLevel(), data.getSaturationLevel());
-        } else {
-            diag("EAT-START {} player={} NO_FOOD_PROPS", itemId(player, event.getItem()),
-                    player.getScoreboardName());
         }
     }
 
@@ -181,33 +231,23 @@ public final class DigestionEvents {
         if (event.getEntity().level().isClientSide() || !(event.getEntity() instanceof ServerPlayer player)) {
             return;
         }
-        String item = itemId(player, event.getItem());
         FoodData data = player.getFoodData();
         float[] snapshot = EAT_SNAPSHOTS.remove(player.getUUID());
         if (snapshot == null) {
-            diag("EAT-FINISH {} player={} NO_SNAPSHOT (Start never ran!) food=({},{})", item,
-                    player.getScoreboardName(), data.getFoodLevel(), data.getSaturationLevel());
             return;
         }
         data.setFoodLevel((int) snapshot[0]);                 // 还原原版直接加的饥饿值
         data.setSaturation(snapshot[1]);                      // 还原原版直接加的饱和度
-        diag("EAT-FINISH {} player={} restored food=({}|{}) snapshot-was=({}|{})", item,
-                player.getScoreboardName(), data.getFoodLevel(), data.getSaturationLevel(),
-                (int) snapshot[0], snapshot[1]);
         // 修复: 饥饿值已满时原版 eat 不产生增量 (旧逻辑据此提前 return 导致吃食物不加消化值)。
         // 改为直接取食物营养值, 只要消化值/消化饱和度还有空间就照常等量增加。
         FoodProperties food = event.getItem().getItem().getFoodProperties(event.getItem(), player);
         if (food == null) {
-            diag("EAT-FINISH {} player={} NO_FOOD_PROPS", item, player.getScoreboardName());
             return;
         }
         Digestion digestion = player.getCapability(DigestionCapability.DIGESTION).orElse(null);
         if (digestion == null) {
-            diag("EAT-FINISH {} player={} NO_CAPABILITY!!!", item, player.getScoreboardName());
             return;
         }
-        float digBefore = digestion.getDigestion();
-        float dsBefore = digestion.getDigestionSaturation();
         // 取值优先级: 配置层覆盖 > 代码登记层 > nutrition * digestionPerNutrition(默认 1:1)
         // 三层都算完后再广播 FoodDigestionEvent, 监听器拿到的就是最终默认值, 仍可继续改写/取消
         Float override = FoodDigestionValues.resolve(event.getItem());
@@ -218,9 +258,6 @@ public final class DigestionEvents {
         //   saturationLevel += nutrition × saturationModifier × 2.0F
         // 这里把 "nutrition" 换成上面解析出的消化值增益, 因此饱和比例跟随倍率/覆盖值一起缩放。
         float defaultSatGain = Math.max(0.0F, gain * food.getSaturationModifier() * 2.0F);
-        diag("EAT-FINISH {} player={} gain=({}|{}) nutrition={} satmod={} override={} dig:({}|{})", item,
-                player.getScoreboardName(), gain, defaultSatGain, food.getNutrition(),
-                food.getSaturationModifier(), override, digBefore, dsBefore);
         FoodDigestionEvent foodEvent = new FoodDigestionEvent(player, event.getItem(), food, gain, defaultSatGain);
         boolean cancelled = MinecraftForge.EVENT_BUS.post(foodEvent);
         if (!cancelled) {
@@ -233,19 +270,13 @@ public final class DigestionEvents {
                 DigestionHelper.addDigestionSaturation(player, satGain);
             }
         }
-        diag("EAT-FINISH {} player={} cancelled={} dig:({}|{} -> {}|{})", item, player.getScoreboardName(),
-                cancelled, digBefore, dsBefore, digestion.getDigestion(), digestion.getDigestionSaturation());
         updateStats(player, digestion);
         ModNetwork.syncTo(player);
     }
 
-    /** 上次同步的消耗值 (仿 AppleSkin SyncHandler: 变化 >= 0.01 才发同步包) */
-    private static final Map<UUID, Float> LAST_EXHAUSTION = new HashMap<>();
-
     @SubscribeEvent
     public static void onPlayerLoggedOut(PlayerEvent.PlayerLoggedOutEvent event) {
         UUID id = event.getEntity().getUUID();
-        LAST_EXHAUSTION.remove(id);
         EAT_SNAPSHOTS.remove(id);   // 进食中断线: 快照不再有 Finish/Stop 事件清理, 必须手动移除
     }
 
@@ -253,7 +284,6 @@ public final class DigestionEvents {
     @SubscribeEvent
     public static void onServerStopping(ServerStoppingEvent event) {
         EAT_SNAPSHOTS.clear();
-        LAST_EXHAUSTION.clear();
     }
 
     /**
@@ -322,24 +352,23 @@ public final class DigestionEvents {
         FoodData data = player.getFoodData();
         boolean sync = false;
 
-        // 消耗值同步: 原版不同步到客户端, 变化 >= 0.01 才发包 (仿 AppleSkin SyncHandler)
-        float exhaustion = data.getExhaustionLevel();
-        Float lastExhaustion = LAST_EXHAUSTION.get(player.getUUID());
-        if (lastExhaustion == null || Math.abs(lastExhaustion - exhaustion) >= 0.01F) {
-            LAST_EXHAUSTION.put(player.getUUID(), exhaustion);
-            sync = true;
-        }
-
-        // 每 0.5s: 转化 / 属性更新 / 呕吐检测
+        // 每 0.5s: 转化 / 属性更新 / 呕吐检测 / 消耗值同步
         if (player.tickCount % 10 == 0) {
-            diagDbg("TICK10 t={} player={} food=({}|{}) exc={} dig=({}|{}) carry={}", player.tickCount,
-                    player.getScoreboardName(), data.getFoodLevel(), data.getSaturationLevel(),
-                    exhaustion, digestion.getDigestion(), digestion.getDigestionSaturation(),
-                    digestion.getFoodCarry());
+            // 消耗值同步: 变化 >= 0.01 才计入同步 (仿 AppleSkin SyncHandler)。
+            // 检查频率与转化同频 (0.5s), 不再每 tick 查询/装箱。
+            float exhaustion = data.getExhaustionLevel();
+            if (Math.abs(digestion.getLastSyncedExhaustion() - exhaustion) >= 0.01F) {
+                digestion.setLastSyncedExhaustion(exhaustion);
+                sync = true;
+            }
             // 速率受药水效果影响: 助消化每级 +20%, 消化不良每级 -20% (互相抵消, 下限 0),
             // 瞬间消化在此基础上再 ×10 (叠乘)。仍走同一条转化路径, 只是每次转得更多, 所以不会出现"一次清空"
             float rate = HungerConfig.BASE_DIGESTION_RATE.get().floatValue()
                     * ModMobEffects.rateMultiplier(player);
+            // 过载加速: 消化值进入惩罚区后, 「消化值 → 饥饿值」的速率随消化值线性放大
+            // (惩罚起点 ×1, 满值 ×1.5, 与惩罚区同一起点配置)。只加速主转化, 不动消化饱和度,
+            // 否则饱和度会先把饥饿值填满、反把主转化堵住, 与"缓解吃撑"的意图相反。
+            float overloadRate = rate * StatFactors.digConversionMultiplier(digestion.getDigestion());
 
             // 先转消化饱和度: 它是消化值之上的"上层", 先转出可避免随后消化值下降时被不变量直接压掉(凭空消失)
             if (digestion.getDigestionSaturation() > 0.0F
@@ -356,9 +385,6 @@ public final class DigestionEvents {
                         digestion.setDigestionSaturation(digestion.getDigestionSaturation() - add);
                         data.setSaturation(data.getSaturationLevel() + add);
                         sync = true;
-                        diagDbg("TICK10 CONV-DS add={} new food=({}|{}) dig=({}|{})", add,
-                                data.getFoodLevel(), data.getSaturationLevel(),
-                                digestion.getDigestion(), digestion.getDigestionSaturation());
                     }
                 }
             }
@@ -371,7 +397,7 @@ public final class DigestionEvents {
                         - digestion.getFoodCarry());
                 float layerRoom = Math.max(0.0F, digestion.getDigestion() - digestion.getDigestionSaturation());
                 float capacity = Math.min(hungerRoom, layerRoom);
-                float transfer = Math.min(Math.min(digestion.getDigestion(), rate), capacity);
+                float transfer = Math.min(Math.min(digestion.getDigestion(), overloadRate), capacity);
                 DigestionConversionEvent conv = new DigestionConversionEvent(player, digestion,
                         DigestionConversionEvent.Type.DIGESTION, transfer);
                 if (!MinecraftForge.EVENT_BUS.post(conv)) {
@@ -386,9 +412,6 @@ public final class DigestionEvents {
                         }
                         digestion.setFoodCarry(carry);
                         sync = true;
-                        diagDbg("TICK10 CONV-DIG add={} new food=({}|{}) dig=({}|{})", transfer,
-                                data.getFoodLevel(), data.getSaturationLevel(),
-                                digestion.getDigestion(), digestion.getDigestionSaturation());
                     }
                 }
             }
@@ -423,8 +446,8 @@ public final class DigestionEvents {
             }
         }
 
-        // 安全网: 效果(饥饿效果等)直接改动消化值时也保证客户端能刷新 (每 20 tick)
-        if (player.tickCount % 20 == 0) {
+        // 安全网: 效果(饥饿效果等)直接改动消化值时也保证客户端能刷新 (每 2s)
+        if (player.tickCount % 40 == 0) {
             sync = true;
         }
 
@@ -441,7 +464,7 @@ public final class DigestionEvents {
      * 其它模组只要给自定义属性加修饰器就能调整惩罚，不必知道本模组内部 UUID，
      * 也不会与原版属性上的其它修饰器抢乘区，{@code /attribute} 亦可直接查询。
      * <p>
-     * 攻/攻速/移速/挖掘 用合成效率（饥饿 × 消化）；游泳只用消化效率。
+     * 攻击力用「饥饿 × 消化攻击效率」；攻速/移速/挖掘/游泳用「饥饿 × 消化速度效率」。
      * 挖掘速度在 Forge 1.20.1 无对应属性，由 BreakSpeed 事件读取同一个自定义属性（免 Mixin）。
      */
     private static void updateStats(ServerPlayer player, Digestion digestion) {
@@ -450,25 +473,33 @@ public final class DigestionEvents {
         if (isStatExempt(player)) {
             clearModifiers(player);
             digestion.setLastAttrFactor(1.0F);
+            digestion.setLastAttackFactor(1.0F);
             digestion.setLastSwimFactor(1.0F);
             return;
         }
 
-        // 1) 公式 -> 自定义属性基础值 (其它模组的修饰器会叠加在这之上)
+        // 1) 公式 -> 自定义属性基础值 (其它模组的修饰器会叠加在这之上);
+        // 消化侧拆成攻击/速度两条曲线, 各自带不可配置的硬上限
         ModAttributes.setHungerEfficiency(player,
                 StatFactors.hungerAttrFactor(player.getFoodData().getFoodLevel()));
         ModAttributes.setDigestionEfficiency(player,
-                StatFactors.digAttrFactor(digestion.getDigestion()));
+                StatFactors.digSpeedFactor(digestion.getDigestion()));
+        ModAttributes.setDigestionAttackEfficiency(player,
+                StatFactors.digAttackFactor(digestion.getDigestion()));
 
         // 2) 从属性读回最终效率 (含其它模组修饰器), 再落到原版属性上
-        double attrFactor = ModAttributes.combinedEfficiency(player);   // 攻击 / 攻速 / 移速 / 挖掘
-        double swimFactor = ModAttributes.digestionEfficiency(player);  // 游泳
+        double speedFactor = ModAttributes.combinedEfficiency(player);       // 攻速 / 移速 / 挖掘
+        double attackFactor = ModAttributes.combinedAttackEfficiency(player); // 攻击力
+        double swimFactor = ModAttributes.digestionEfficiency(player);        // 游泳
 
-        if (Math.abs(attrFactor - digestion.getLastAttrFactor()) > 1e-4) {
-            applyFactor(player, Attributes.ATTACK_DAMAGE, UUID_ATTACK, attrFactor);
-            applyFactor(player, Attributes.ATTACK_SPEED, UUID_ATK_SPD, attrFactor);
-            applyFactor(player, Attributes.MOVEMENT_SPEED, UUID_MOVE, attrFactor);
-            digestion.setLastAttrFactor((float) attrFactor);
+        if (Math.abs(attackFactor - digestion.getLastAttackFactor()) > 1e-4) {
+            applyFactor(player, Attributes.ATTACK_DAMAGE, UUID_ATTACK, attackFactor);
+            digestion.setLastAttackFactor((float) attackFactor);
+        }
+        if (Math.abs(speedFactor - digestion.getLastAttrFactor()) > 1e-4) {
+            applyFactor(player, Attributes.ATTACK_SPEED, UUID_ATK_SPD, speedFactor);
+            applyFactor(player, Attributes.MOVEMENT_SPEED, UUID_MOVE, speedFactor);
+            digestion.setLastAttrFactor((float) speedFactor);
         }
         if (Math.abs(swimFactor - digestion.getLastSwimFactor()) > 1e-4) {
             applyFactor(player, ForgeMod.SWIM_SPEED.get(), UUID_SWIM, swimFactor);
@@ -476,7 +507,7 @@ public final class DigestionEvents {
         }
     }
 
-    /** 对外 API: 清除本模组施加在玩家身上的全部属性修饰器, 并把两个自定义属性复位为 1.0 */
+    /** 对外 API: 清除本模组施加在玩家身上的全部属性修饰器, 并把三个自定义属性复位为 1.0 */
     public static void clearModifiers(Player player) {
         applyFactor(player, Attributes.ATTACK_DAMAGE, UUID_ATTACK, 1.0);
         applyFactor(player, Attributes.ATTACK_SPEED, UUID_ATK_SPD, 1.0);
@@ -529,7 +560,7 @@ public final class DigestionEvents {
                 return;
             }
             factor = StatFactors.hungerAttrFactor(player.getFoodData().getFoodLevel())
-                    * StatFactors.digAttrFactor(digestion.getDigestion());
+                    * StatFactors.digSpeedFactor(digestion.getDigestion());
         }
         if (factor != 1.0) {
             event.setNewSpeed((float) (event.getNewSpeed() * factor));

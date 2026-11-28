@@ -59,6 +59,21 @@ public final class HungerConfig {
     /** 死亡复活是否保留死亡前的饥饿值/饱和度 (默认 true). 关闭则复活使用开局数值 */
     public static final ForgeConfigSpec.BooleanValue KEEP_HUNGER_ON_RESPAWN;
 
+    /**
+     * 低饥饿死亡复活保底 (% of maxHunger, 默认 30, 0 = 关闭).
+     * 死亡时饥饿值低于该百分比 → 复活后把饥饿值补到该值；同一个数值同时作为判定阈值与给予值。
+     */
+    public static final ForgeConfigSpec.DoubleValue STARVATION_RESPAWN_HUNGER_PERCENT;
+
+    /** 死亡损失: 失去当前饥饿值的百分比 (默认 0 = 关闭) */
+    public static final ForgeConfigSpec.DoubleValue DEATH_HUNGER_LOSS_PERCENT;
+    /** 死亡损失: 失去当前饱和度的百分比 (默认 0 = 关闭) */
+    public static final ForgeConfigSpec.DoubleValue DEATH_SATURATION_LOSS_PERCENT;
+    /** 死亡损失: 失去当前消化值的百分比 (默认 0 = 关闭) */
+    public static final ForgeConfigSpec.DoubleValue DEATH_DIGESTION_LOSS_PERCENT;
+    /** 死亡损失: 失去当前消化饱和度的百分比 (默认 0 = 关闭) */
+    public static final ForgeConfigSpec.DoubleValue DEATH_DIGESTION_SATURATION_LOSS_PERCENT;
+
     // ---------------- 惩罚阈值 / 属性因子 (penalties) ----------------
 
     public static final ForgeConfigSpec.DoubleValue HUNGER_PENALTY_THRESHOLD_PERCENT;
@@ -94,6 +109,41 @@ public final class HungerConfig {
     public static final ForgeConfigSpec.DoubleValue DIGESTION_PER_NUTRITION;
     /** per-item 绝对消化值覆盖 ("modid:item=value"), 优先于全局倍率与代码登记层 */
     public static final ForgeConfigSpec.ConfigValue<List<? extends String>> DIGESTION_OVERRIDES;
+
+    // ---------------- 和平模式 (peaceful) ----------------
+
+    /**
+     * 合并自 PeacefulDepletion (MIT, MapleSugar365): 禁用原版和平模式的自动回血/自动补饥饿,
+     * 并让和平模式下的饥饿照常消耗 (等价于把难度判定当成 HARD)。默认开启。
+     */
+    public static final ForgeConfigSpec.BooleanValue DISABLE_PEACEFUL_AUTO_REGEN;
+
+    // ---------------- 活动消耗 (exhaustion) ----------------
+
+    /** 普通走路: 每米消耗值 */
+    public static final ForgeConfigSpec.DoubleValue WALK_EXHAUSTION_PER_METER;
+    /** 潜行: 每米消耗值 */
+    public static final ForgeConfigSpec.DoubleValue CROUCH_EXHAUSTION_PER_METER;
+    /** 地面冲刺: 每米消耗值 */
+    public static final ForgeConfigSpec.DoubleValue SPRINT_EXHAUSTION_PER_METER;
+    /** 游泳(游泳姿态): 每米消耗值 */
+    public static final ForgeConfigSpec.DoubleValue SWIM_EXHAUSTION_PER_METER;
+    /** 头部在水里行走: 每米消耗值 */
+    public static final ForgeConfigSpec.DoubleValue WALK_UNDER_WATER_EXHAUSTION_PER_METER;
+    /** 浅水/水面行走: 每米消耗值 */
+    public static final ForgeConfigSpec.DoubleValue WALK_ON_WATER_EXHAUSTION_PER_METER;
+    /** 爬梯子/藤蔓(仅向上): 每米消耗值 */
+    public static final ForgeConfigSpec.DoubleValue CLIMB_EXHAUSTION_PER_METER;
+    /** 近战命中并造成伤害: 每次消耗值 */
+    public static final ForgeConfigSpec.DoubleValue ATTACK_EXHAUSTION;
+    /** 受伤消耗倍率 (原版按伤害类型 0 / 0.1 计, 这里整体缩放) */
+    public static final ForgeConfigSpec.DoubleValue DAMAGE_EXHAUSTION_MULTIPLIER;
+    /** 普通跳跃: 每次消耗值 */
+    public static final ForgeConfigSpec.DoubleValue JUMP_EXHAUSTION;
+    /** 冲刺跳: 每次消耗值 */
+    public static final ForgeConfigSpec.DoubleValue SPRINT_JUMP_EXHAUSTION;
+    /** 破坏方块: 消耗值 = 该系数 × 方块硬度 */
+    public static final ForgeConfigSpec.DoubleValue BLOCK_BREAK_EXHAUSTION_PER_HARDNESS;
 
     // ---------------- 溢出缓存 (overflow) ----------------
 
@@ -147,6 +197,30 @@ public final class HungerConfig {
                         "Non-death player clones (dimension change / returning from the End) always keep them.",
                         "Default true.")
                 .define("keepHungerOnRespawn", true);
+        STARVATION_RESPAWN_HUNGER_PERCENT = builder
+                .comment("Low-hunger death floor: if the player dies with foodLevel below",
+                        "maxHunger * this percent, respawn grants exactly that many hunger points.",
+                        "The SAME value drives both the death check and the granted amount, so raising",
+                        "or lowering it never desynchronizes the two. Only raises hunger, never lowers it.",
+                        "Default 30. Set 0 to disable the mechanic entirely.")
+                .defineInRange("starvationRespawnHungerPercent", 30.0D, 0.0D, 100.0D);
+        DEATH_HUNGER_LOSS_PERCENT = builder
+                .comment("Death loss: percent of the CURRENT food level lost on death. Default 0 = disabled.",
+                        "Applied to the value that survives into respawn (kept value, or starting value when",
+                        "keepHungerOnRespawn is false), i.e. respawn value = value x (1 - percent/100).",
+                        "The starvation respawn floor is applied afterwards, so it still acts as a lower bound.")
+                .defineInRange("deathHungerLossPercent", 0.0D, 0.0D, 100.0D);
+        DEATH_SATURATION_LOSS_PERCENT = builder
+                .comment("Death loss: percent of the CURRENT saturation lost on death. Default 0 = disabled.")
+                .defineInRange("deathSaturationLossPercent", 0.0D, 0.0D, 100.0D);
+        DEATH_DIGESTION_LOSS_PERCENT = builder
+                .comment("Death loss: percent of the CURRENT digestion value lost on death. Default 0 = disabled.")
+                .defineInRange("deathDigestionLossPercent", 0.0D, 0.0D, 100.0D);
+        DEATH_DIGESTION_SATURATION_LOSS_PERCENT = builder
+                .comment("Death loss: percent of the CURRENT digestion saturation lost on death. Default 0 = disabled.",
+                        "Both digestion losses are computed from the pre-death values, then clamped to the",
+                        "sat <= digestion invariant.")
+                .defineInRange("deathDigestionSaturationLossPercent", 0.0D, 0.0D, 100.0D);
         builder.pop();
 
         builder.push("digestion");
@@ -182,9 +256,13 @@ public final class HungerConfig {
         DIGESTION_PENALTY_START_PERCENT = builder
                 .comment("Digestion percent (of maxDigestion, NOT maxHunger) where overload penalties begin.",
                         "Default 66.67 = 2/3 of the digestion bar.",
-                        "The curve is a straight line from efficiency 1.0 here down to 0.0 at",
-                        "vomitThresholdPercent, so it stays correct when maxDigestion, maxHunger or the",
-                        "vomit threshold are changed independently.")
+                        "The curve is a straight line from efficiency 1.0 here down to the HARD caps at",
+                        "vomitThresholdPercent: -30% attack damage, -60% speed (attack speed / movement /",
+                        "swim / mining). Those caps are NOT configurable and can never be exceeded.",
+                        "So it stays correct when maxDigestion, maxHunger or the vomit threshold change.",
+                        "This is ALSO the start of the overload digestion speed-up: above this percent the",
+                        "digestion -> hunger conversion rate scales linearly with the digestion value",
+                        "(x1 here, x(100/thisPercent) at vomitThresholdPercent, x1.5 by default).")
                 .defineInRange("digestionPenaltyStartPercent", 66.67D, 0.0D, 100.0D);
         SPRINT_HUNGER_THRESHOLD_PERCENT = builder
                 .comment("Sprint requires foodLevel above maxHunger * this percent. Default 30 (vanilla = 6/20).")
@@ -199,7 +277,9 @@ public final class HungerConfig {
                 .comment("Heal percent per fast-regen tick at full hunger (vanilla fast regen = 1 heart/0.5s). Default 60.")
                 .defineInRange("regenAtFullHungerPercent", 60.0D, 0.0D, 1000.0D);
         REGEN_EXHAUSTION_PER_HEALTH = builder
-                .comment("Vanilla regen pricing: exhaustion added per 1 health healed. Default 6.0.")
+                .comment("Vanilla regen pricing: exhaustion added per 1 health healed. Default 6.0.",
+                        "Fast-track cost is paid with saturation only, slow-track cost with hunger only",
+                        "(each track keeps its own ledger, separate from the vanilla exhaustion bar).")
                 .defineInRange("regenExhaustionPerHealth", 6.0D, 0.0D, 100.0D);
         FAST_REGEN_INTERVAL_TICKS = builder
                 .comment("Ticks between saturation-driven (fast) regen ticks. Default 10 (0.5s).")
@@ -259,6 +339,61 @@ public final class HungerConfig {
                         "Example: [\"minecraft:cake=6.0\", \"minecraft:golden_carrot=9.0\"]. Default empty.")
                 .defineListAllowEmpty(List.of("digestionOverrides"), List.of(),
                         o -> o instanceof String s && s.contains("="));
+        builder.pop();
+
+        builder.push("peaceful");
+        DISABLE_PEACEFUL_AUTO_REGEN = builder
+                .comment("Merged from PeacefulDepletion (MIT, MapleSugar365). If true (default):",
+                        "- vanilla peaceful mode no longer regenerates health automatically;",
+                        "- vanilla peaceful mode no longer refills hunger automatically;",
+                        "- hunger still decays in peaceful mode (HARD difficulty check).",
+                        "Set false to restore full vanilla peaceful behaviour.",
+                        "Compatibility: Difficulty Overhaul's 'peaceful' mode promises no hunger decay.",
+                        "While this is true, this option takes precedence (technical mixins do not collide).")
+                .define("disablePeacefulAutoRegen", true);
+        builder.pop();
+
+        builder.push("exhaustion");
+        WALK_EXHAUSTION_PER_METER = builder
+                .comment("Exhaustion per meter while walking normally (vanilla: 0). Default 0.05.")
+                .defineInRange("walkExhaustionPerMeter", 0.05D, 0.0D, 100.0D);
+        CROUCH_EXHAUSTION_PER_METER = builder
+                .comment("Exhaustion per meter while crouching/sneaking (vanilla: 0). Default 0.05.")
+                .defineInRange("crouchExhaustionPerMeter", 0.05D, 0.0D, 100.0D);
+        SPRINT_EXHAUSTION_PER_METER = builder
+                .comment("Exhaustion per meter while sprinting on the ground (vanilla: 0.1). Default 0.1.")
+                .defineInRange("sprintExhaustionPerMeter", 0.1D, 0.0D, 100.0D);
+        SWIM_EXHAUSTION_PER_METER = builder
+                .comment("Exhaustion per meter while swimming (vanilla: 0.01). Default 0.1.")
+                .defineInRange("swimExhaustionPerMeter", 0.1D, 0.0D, 100.0D);
+        WALK_UNDER_WATER_EXHAUSTION_PER_METER = builder
+                .comment("Exhaustion per meter while walking with the eyes under water (vanilla: 0.01). Default 0.05.")
+                .defineInRange("walkUnderWaterExhaustionPerMeter", 0.05D, 0.0D, 100.0D);
+        WALK_ON_WATER_EXHAUSTION_PER_METER = builder
+                .comment("Exhaustion per meter while walking in shallow/surface water (vanilla: 0.01). Default 0.05.")
+                .defineInRange("walkOnWaterExhaustionPerMeter", 0.05D, 0.0D, 100.0D);
+        CLIMB_EXHAUSTION_PER_METER = builder
+                .comment("Exhaustion per meter climbed UP on ladders/vines (vanilla: 0). Default 0.1.")
+                .defineInRange("climbExhaustionPerMeter", 0.1D, 0.0D, 100.0D);
+        ATTACK_EXHAUSTION = builder
+                .comment("Exhaustion per successful melee hit that deals damage (vanilla: 0.1). Default 0.1.")
+                .defineInRange("attackExhaustion", 0.1D, 0.0D, 100.0D);
+        DAMAGE_EXHAUSTION_MULTIPLIER = builder
+                .comment("Multiplier applied to the exhaustion caused by taking damage.",
+                        "Vanilla charges 0.1 per hit for combat damage types and 0 for fall/drown/wither/magic etc.;",
+                        "this keeps that per-type difference and only scales it. Default 1.0.")
+                .defineInRange("damageExhaustionMultiplier", 1.0D, 0.0D, 100.0D);
+        JUMP_EXHAUSTION = builder
+                .comment("Exhaustion per normal jump (vanilla: 0.05). Default 0.05.")
+                .defineInRange("jumpExhaustion", 0.05D, 0.0D, 100.0D);
+        SPRINT_JUMP_EXHAUSTION = builder
+                .comment("Exhaustion per jump while sprinting (vanilla: 0.2). Default 0.2.")
+                .defineInRange("sprintJumpExhaustion", 0.2D, 0.0D, 100.0D);
+        BLOCK_BREAK_EXHAUSTION_PER_HARDNESS = builder
+                .comment("Exhaustion for breaking a block = this coefficient x block hardness.",
+                        "Vanilla uses a flat 0.005 per block. Default 0.01 (= stone hardness 1.5 -> 0.015).",
+                        "Instant-break blocks (hardness 0) cost nothing.")
+                .defineInRange("blockBreakExhaustionPerHardness", 0.01D, 0.0D, 100.0D);
         builder.pop();
 
         builder.push("overflow");
@@ -424,6 +559,31 @@ public final class HungerConfig {
         return flag(KEEP_HUNGER_ON_RESPAWN, true);
     }
 
+    /** 低饥饿死亡复活保底百分比 (0 = 关闭) */
+    public static float starvationRespawnHungerPercent() {
+        return dbl(STARVATION_RESPAWN_HUNGER_PERCENT, 30.0F);
+    }
+
+    /** 死亡失去当前饥饿值的百分比 (0 = 关闭) */
+    public static float deathHungerLossPercent() {
+        return dbl(DEATH_HUNGER_LOSS_PERCENT, 0.0F);
+    }
+
+    /** 死亡失去当前饱和度的百分比 (0 = 关闭) */
+    public static float deathSaturationLossPercent() {
+        return dbl(DEATH_SATURATION_LOSS_PERCENT, 0.0F);
+    }
+
+    /** 死亡失去当前消化值的百分比 (0 = 关闭) */
+    public static float deathDigestionLossPercent() {
+        return dbl(DEATH_DIGESTION_LOSS_PERCENT, 0.0F);
+    }
+
+    /** 死亡失去当前消化饱和度的百分比 (0 = 关闭) */
+    public static float deathDigestionSaturationLossPercent() {
+        return dbl(DEATH_DIGESTION_SATURATION_LOSS_PERCENT, 0.0F);
+    }
+
     // ---------------- 惩罚阈值 / 属性因子 ----------------
 
     public static float hungerPenaltyThresholdPercent() {
@@ -501,6 +661,61 @@ public final class HungerConfig {
 
     public static boolean redirectMobEffects() {
         return flag(REDIRECT_MOB_EFFECTS, true);
+    }
+
+    /** 是否禁用和平模式的自动回血/自动补饥饿 (默认 true, 合并自 PeacefulDepletion) */
+    public static boolean disablePeacefulAutoRegen() {
+        return flag(DISABLE_PEACEFUL_AUTO_REGEN, true);
+    }
+
+    // ---------------- 活动消耗 (exhaustion) ----------------
+
+    public static float walkExhaustionPerMeter() {
+        return dbl(WALK_EXHAUSTION_PER_METER, 0.05F);
+    }
+
+    public static float crouchExhaustionPerMeter() {
+        return dbl(CROUCH_EXHAUSTION_PER_METER, 0.05F);
+    }
+
+    public static float sprintExhaustionPerMeter() {
+        return dbl(SPRINT_EXHAUSTION_PER_METER, 0.1F);
+    }
+
+    public static float swimExhaustionPerMeter() {
+        return dbl(SWIM_EXHAUSTION_PER_METER, 0.1F);
+    }
+
+    public static float walkUnderWaterExhaustionPerMeter() {
+        return dbl(WALK_UNDER_WATER_EXHAUSTION_PER_METER, 0.05F);
+    }
+
+    public static float walkOnWaterExhaustionPerMeter() {
+        return dbl(WALK_ON_WATER_EXHAUSTION_PER_METER, 0.05F);
+    }
+
+    public static float climbExhaustionPerMeter() {
+        return dbl(CLIMB_EXHAUSTION_PER_METER, 0.1F);
+    }
+
+    public static float attackExhaustion() {
+        return dbl(ATTACK_EXHAUSTION, 0.1F);
+    }
+
+    public static float damageExhaustionMultiplier() {
+        return dbl(DAMAGE_EXHAUSTION_MULTIPLIER, 1.0F);
+    }
+
+    public static float jumpExhaustion() {
+        return dbl(JUMP_EXHAUSTION, 0.05F);
+    }
+
+    public static float sprintJumpExhaustion() {
+        return dbl(SPRINT_JUMP_EXHAUSTION, 0.2F);
+    }
+
+    public static float blockBreakExhaustionPerHardness() {
+        return dbl(BLOCK_BREAK_EXHAUSTION_PER_HARDNESS, 0.01F);
     }
 
     public static float maxExhaustion() {

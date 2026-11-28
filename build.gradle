@@ -188,4 +188,5 @@ publishing {
 // 编译编码：保持 UTF-8（Mixin AP 参数 / refmap / reobf 映射由 MixinGradle 自动配置）
 tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8'
+    options.compilerArgs += ['-Xlint:-removal']
 }

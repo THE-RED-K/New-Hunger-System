@@ -59,15 +59,28 @@
 
 - **进食接管**：`FoodData#eat` 被重写，食物营养不再直接进饥饿值；`needsFood` 可配置为"任何时候都能吃"。
 - **回血曲线（双轨并行）**：两轨**共用** `slowRegenHungerRatio`（默认 60%）门槛，低于门槛时即使饱和度充足也**完全停止回血**；
-  **快轨**由饱和度驱动（默认每 10 tick），**慢轨**由饥饿值达标驱动（每 40 tick），饱和度未耗尽时两轨**同时回血、同时计价**，
-  消耗值下降更快，饥饿值跌破 60% 后回血会**自发暂停**，并减少消化值堆积到呕吐阈值的概率。
-  两轨共用同一套回血量公式（饥饿值缩放 + 消化过载因子），按**实际回血量** × 6.0 计价消耗值。保留原版 `naturalRegeneration` 游戏规则。
-- **属性惩罚**：饥饿值低于阈值 → 攻击/攻速/移速/挖掘下降；消化值过载 → 上述各项 + 游泳 + 回血再降。
-  惩罚通过两个自定义属性实现，见下节。
+  **快轨**由饱和度驱动（默认每 10 tick）且**只消耗饱和度**，**慢轨**由饥饿值达标驱动（每 40 tick）且**只消耗饥饿值**，
+  两本燃料账本互相独立（不共用原版 `exhaustionLevel`），饱和度未耗尽时两轨**同时回血、各烧各的燃料**，
+  饥饿值跌破 60% 后回血会**自发暂停**，并减少消化值堆积到呕吐阈值的概率。
+  两轨共用同一套回血量公式（仅由饥饿值缩放，**消化值不影响回血**），按**实际回血量** × 6.0 计入各自账本，每满 4 点扣 1 点对应燃料。保留原版 `naturalRegeneration` 游戏规则。
+- **属性惩罚**：饥饿值低于阈值 → 攻击/攻速/移速/挖掘下降；消化值过载 → 攻击力与攻速/移速/游泳/挖掘再降。
+  消化过载的惩罚幅度有**不可配置的硬上限**：攻击力最多 −30%，各速度最多 −60%（默认曲线到呕吐点时正好达到上限）。
+  惩罚通过三个自定义属性实现，见下节。
+- **过载加速**：消化值进入惩罚区（> `digestionPenaltyStartPercent`，默认 66.67%）后，`消化值 → 饥饿值` 的转化速率
+  随消化值线性放大 —— 起点 ×1，到呕吐点时 ×1.5（默认 `baseDigestionRate` 0.15/0.5s → 0.225/0.5s），
+  吃撑越重消化越快，缩短惩罚停留时间。「加速区」与「惩罚区」共用同一配置，不会错位。
 - **呕吐**：消化值达到阈值（默认 100%）→ 清空消化值/消化饱和度 + 反胃；开启溢出缓存时由缓存取代呕吐。
 - **溢出**：写入超过上限的部分会广播 `DigestionOverflowEvent`；可选"溢出缓存"会把溢出排队，之后有空位再回填（默认关闭）。
 - **睡眠结算**：起床时对饥饿/饱和/消化/消化饱和做可配置的增减（默认全 0，即保持原版行为）。
 - **其他**：原版"饱和""饥饿"效果被重定向到消化层；创造/旁观模式豁免惩罚；死亡复活可选保留饥饿值。
+- **和平模式不再自动恢复**（合并自 PeacefulDepletion，MIT）：`[peaceful] disablePeacefulAutoRegen` 默认开启时，
+  和平模式不再自动回血、不再自动补饥饿，饥饿值也照常消耗（等价于按 HARD 判定）；关闭可恢复原版行为。
+  原版那条 `setFoodLevel(+1)` 在本模组中始终钳制到 `maxHunger`，即使关闭配置也不会越过上限。
+- **低饥饿死亡保底**：死亡时饥饿值低于 `maxHunger × starvationRespawnHungerPercent`（默认 30%）→ 复活后把饥饿值补到该值；
+  同一个配置值同时作为判定阈值与给予值，设为 0% 则整个机制关闭；只抬高不压低。
+- **死亡损失**：`deathHungerLossPercent` / `deathSaturationLossPercent` / `deathDigestionLossPercent` /
+  `deathDigestionSaturationLossPercent`（各默认 0 = 关闭），按**当前值**的百分比扣减，复活后数值 = 当前值 × (1 − pct%)；
+  先扣损失再做低饥饿保底，因此保底仍然是最低值。
 
 ### HUD（仿 AppleSkin，可逐项关闭）
 
@@ -81,7 +94,7 @@
 
 | 类型 | 内容 |
 |---|---|
-| 自定义属性 | `new_hunger_system:hunger_efficiency`、`new_hunger_system:digestion_efficiency`（默认 1.0，可被任何模组加修饰器，直接决定攻/速/挖掘/游泳/回血的惩罚强度） |
+| 自定义属性 | `new_hunger_system:hunger_efficiency`、`new_hunger_system:digestion_efficiency`（速度类）、`new_hunger_system:digestion_attack_efficiency`（攻击力）（默认 1.0，可被任何模组加修饰器，直接决定攻击/攻速/移速/挖掘/游泳的惩罚强度；消化侧两项受硬上限钳制） |
 | 数据门面 | `DigestionHelper`：`get / optional / set / add / addDigestion / addDigestionSaturation / reset / resetToStart / registerFoodValue` |
 | 上限 API | `HungerConfig.addMaxHunger / addMaxSaturation / addMaxDigestion / addMaxDigestionSaturation`（运行期调用会持久化进当前存档） |
 | 数据驱动 | 配置 `[food] digestionOverrides`（`"modid:item=value"`）+ 代码登记 `registerFoodValue`，优先级：配置 > 代码 > 内置公式 |
@@ -135,7 +148,8 @@
 | `vomit` | 呕吐阈值（100%）、反胃时长/等级 |
 | `food` | 随时进食、效果重定向、`digestionPerNutrition`、`digestionOverrides` |
 | `overflow` | 溢出缓存开关（默认 false）与容量 |
-| `respawn` | 死亡是否保留饥饿值 |
+| `peaceful` | `disablePeacefulAutoRegen`（默认 true）：禁用和平模式自动回血/自动补饥饿，和平模式饥饿照常消耗 |
+| `respawn` | 死亡是否保留饥饿值、低饥饿死亡复活保底（`starvationRespawnHungerPercent`，默认 30%，0 = 关闭）、四项死亡损失百分比（默认 0 = 关闭） |
 | `sleep` | 起床后四项数值的增减（默认 0） |
 | 客户端 | 消化条/饱和叠层/手持预显/消耗值底栏/数字/F3/原版抖动 + AppleSkin 兼容抑制 |
 
@@ -149,6 +163,23 @@
   在 `mods.toml` 中声明为 `mandatory=false / side=CLIENT`。
 - **原版**：饥饿条、饱和度、血量、饥饿效果、饱和效果、药水效果均照常工作，只是被重定向。
 - 与其它修改 `FoodData` 的模组可能冲突（本模组使用较低 Mixin 优先级接管 `eat/tick/needsFood`）。
+- **Difficulty Overhaul**：无 Mixin 冲突（它注入 `Player.hurt` / `Mob` / `DifficultyInstance` / 创建世界界面，
+  本模组的和平模式开关注入 `Player.aiStep`）。但两者对"和平模式"的语义相反——它的和平模式描述为"饥饿不下降、
+  血量恢复"，而本模组 `disablePeacefulAutoRegen=true`（默认）会禁用这些特性。需要它的和平模式行为时把该项设为 `false`。
+- **CakeBlock**：蛋糕切片已重定向到消化层（`+2` 消化值 / `+0.4` 消化饱和度），不再直接加饥饿值。
+
+---
+
+## 第三方与许可
+
+- 本模组本体：**MIT**（`LICENSE`，Copyright (c) 2026 THE_RED_K）
+- Chest Cavity（作者 David Troyer）贴图：`textures/item/stomach.png`、由其重绘的
+  `textures/item/golden_stomach.png`、以及由它生成的 `textures/gui/stomach_icons.png`；
+  源码 `fabric.mod.json` 与 Modrinth 页面声明 **CC0-1.0**，CurseForge 页面声明 **Apache-2.0**，按最严格的 Apache-2.0 履行
+- PeacefulDepletion（合并的和平模式逻辑）：**MIT**，MapleSugar365
+- farsighted-mobs（仅参考思路；已拉取仓库逐文件比对，无代码/资源复制）：**LGPL-3.0**，Sindarin27
+
+完整归属、修改说明与许可证全文见 `THIRD_PARTY_NOTICES.md` 与 `licenses/`。
 
 ---
 

@@ -11,6 +11,22 @@ import net.minecraft.util.Mth;
  */
 public final class StatFactors {
 
+    /**
+     * 攻击力最大惩罚比例 —— <b>硬上限, 不可配置</b>。
+     * <p>
+     * 消化过载对攻击力的削弱最多 30% (效率最低 0.70)。写成常量而不是配置项,
+     * 是为了保证任何配置改动 (maxDigestion / digestionPenaltyStartPercent /
+     * vomitThresholdPercent) 都无法让惩罚越过这条线。
+     */
+    public static final double MAX_ATTACK_PENALTY = 0.30;
+
+    /**
+     * 速度类(攻击速度/移动速度/游泳速度/挖掘速度)最大惩罚比例 —— <b>硬上限, 不可配置</b>。
+     * <p>
+     * 最多 60% (效率最低 0.40), 同样不随配置变化。
+     */
+    public static final double MAX_SPEED_PENALTY = 0.60;
+
     private StatFactors() {
     }
 
@@ -41,25 +57,85 @@ public final class StatFactors {
     }
 
     /**
-     * 消化过载惩罚: 从 {@code digestionPenaltyStartPercent}（默认 66.67 = 2/3 消化条）开始，
-     * 线性降到 {@code vomitThresholdPercent}（呕吐点）处归零；两个锚点之前恒为 1.0。
+     * 消化过载的原始强度: 0.0 = 未进入惩罚区, 1.0 = 已到呕吐点(惩罚满载)。
      * <p>
-     * 两个锚点都以 <b>maxDigestion</b> 为基准，因此 maxDigestion / maxHunger / 呕吐阈值
-     * 任意独立变化都不会让曲线错位（旧实现以 maxHunger 为基准，上限一改就会出现
-     * "后半条永久 0% 效率" 或 "惩罚完全失效"）。
+     * 从 {@code digestionPenaltyStartPercent}（默认 66.67 = 2/3 消化条）开始线性上升，
+     * 到 {@code vomitThresholdPercent}（呕吐点）达到 1.0；两个锚点都以 <b>maxDigestion</b> 为基准，
+     * 因此 maxDigestion / maxHunger / 呕吐阈值任意独立变化都不会让曲线错位。
+     * <p>
+     * 这里只给出 0~1 的"过载程度", 具体惩罚幅度由
+     * {@link #MAX_ATTACK_PENALTY} / {@link #MAX_SPEED_PENALTY} 决定 —— 两者都是硬上限,
+     * 所以本方法的输出无论怎么配都不会让效率跌破上限线。
      */
-    public static double digAttrFactor(float digestion) {
+    private static double digOverloadRatio(float digestion) {
         double max = maxDigestion();
         if (max <= 0.0) {
-            return 1.0;
+            return 0.0;
         }
         double pct = (digestion / max) * 100.0;
         double start = HungerConfig.digestionPenaltyStartPercent();
         double end = HungerConfig.vomitThresholdPercent();
         if (end <= start || pct <= start) {
-            return 1.0;
+            return 0.0;
         }
-        return Mth.clamp((end - pct) / (end - start), 0.0, 1.0);
+        return Mth.clamp((pct - start) / (end - start), 0.0, 1.0);
+    }
+
+    /**
+     * 消化过载对<b>攻击力</b>的效率: 1.0 = 无惩罚, 最低 {@code 1 - MAX_ATTACK_PENALTY} (0.70)。
+     * <p>
+     * 默认曲线在惩罚区内线性削弱, 呕吐点时正好达到 30% 的硬上限; 不是线性掉到 0。
+     */
+    public static double digAttackFactor(float digestion) {
+        return 1.0 - digOverloadRatio(digestion) * MAX_ATTACK_PENALTY;
+    }
+
+    /**
+     * 消化过载对<b>速度类</b>(攻击速度/移动速度/游泳速度/挖掘速度)的效率:
+     * 1.0 = 无惩罚, 最低 {@code 1 - MAX_SPEED_PENALTY} (0.40)。
+     * <p>
+     * 同样默认线性削弱, 呕吐点时正好达到 60% 的硬上限。
+     */
+    public static double digSpeedFactor(float digestion) {
+        return 1.0 - digOverloadRatio(digestion) * MAX_SPEED_PENALTY;
+    }
+
+    /**
+     * 过载加速倍率: 消化值超过惩罚起点（同一个配置 {@code digestionPenaltyStartPercent}）后，
+     * 消化值 → 饥饿值 的转化速率随消化值线性放大 —— 起点处 ×1，满值处 ×(100 / 起点百分比)
+     * （默认起点 66.67% → 满值 ×1.5）。
+     * <p>
+     * 「加速区」与「惩罚区」刻意共用同一配置：吃撑越重，消化越快，惩罚停留时间越短，
+     * 调惩罚起点时两者不会错位。消化值低于起点时恒为 1.0，即保持原来的恒定速率。
+     */
+    public static float digConversionMultiplier(float digestion) {
+        float max = maxDigestion();
+        if (max <= 0.0F) {
+            return 1.0F;
+        }
+        float start = (float) (max * HungerConfig.digestionPenaltyStartPercent() / 100.0);
+        if (start <= 0.0F) {
+            // 起点被配成 0: 没有可参照的门槛, 不加速 (否则会除零/无限放大)
+            return 1.0F;
+        }
+        float clamped = Mth.clamp(digestion, 0.0F, max);
+        if (clamped <= start) {
+            return 1.0F;
+        }
+        return clamped / start;
+    }
+
+    /**
+     * 原始消化过载曲线 (1.0 → 0.0, 未套用任何惩罚上限)。
+     * <p>
+     * 仅保留给外部调用方做"过载程度"参考; 游戏内的属性惩罚已改用
+     * {@link #digAttackFactor} / {@link #digSpeedFactor}, 回血不再受消化值影响。
+     *
+     * @deprecated 实际惩罚请使用 {@link #digAttackFactor} / {@link #digSpeedFactor}
+     */
+    @Deprecated
+    public static double digAttrFactor(float digestion) {
+        return 1.0 - digOverloadRatio(digestion);
     }
 
     /**

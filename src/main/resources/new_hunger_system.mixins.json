@@ -7,7 +7,11 @@
   "mixins": [
     "FoodDataMixin",
     "FoodDataInitMixin",
-    "MobEffectMixin"
+    "MobEffectMixin",
+    "CakeBlockMixin",
+    "PlayerPeacefulMixin",
+    "PlayerExhaustionMixin",
+    "BlockBreakExhaustionMixin"
   ],
   "client": [
     "LocalPlayerMixin"

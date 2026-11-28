@@ -6,12 +6,14 @@ import net.minecraft.world.entity.player.Player;
 import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.common.util.INBTSerializable;
 
+import java.lang.ref.WeakReference;
+
 /**
  * 玩家消化系统数据:
  * digestion            消化值      (0..maxDigestion(), 上限见 HungerConfig)
  * digestionSaturation  消化饱和度  (0..maxDigestionSaturation(), 上限见 HungerConfig, 且不能超过消化值)
  * foodCarry            消化值->饥饿值的进位缓存 (0..1, 内部用)
- * lastAttrFactor/lastSwimFactor  上一次应用的属性因子缓存, 仅在变化时才重设修饰器
+ * lastAttrFactor/lastAttackFactor/lastSwimFactor  上一次应用的属性因子缓存, 仅在变化时才重设修饰器
  */
 public class Digestion implements INBTSerializable<CompoundTag> {
 
@@ -29,13 +31,22 @@ public class Digestion implements INBTSerializable<CompoundTag> {
     private float digestionSaturation;
     private float foodCarry;
     private float lastAttrFactor = 1.0F;
+    private float lastAttackFactor = 1.0F;
     private float lastSwimFactor = 1.0F;
+    /** 上一次同步给客户端的消耗值 (-1 = 尚未同步, 首次强制发一次) */
+    private float lastSyncedExhaustion = -1.0F;
     /** 溢出缓存 (默认关闭, 由 DigestionOverflowEvent 填充, 每 0.5s 回填) */
     private float overflowDigestionCache;
     private float overflowSaturationCache;
 
-    /** Capability 所属玩家; 为 null (手工 new) 时不广播事件, 但 setter 行为完全一致 */
-    private final Player owner;
+    /**
+     * Capability 所属玩家（<b>弱引用</b>）。
+     * <p>
+     * 第三方缓存 {@code Digestion} 实例时不应拖住玩家实体（跨维度/退出后内存滞留）；
+     * 实体被回收后 {@link WeakReference#get()} 返回 null，此时不再广播溢出事件（setter 行为不变）。
+     * 手工 new 的实例（无 owner）同样不广播。
+     */
+    private final WeakReference<Player> owner;
 
     /** 事件重入保护: 监听器在事件里同步回写 Capability 时不再二次广播, 避免无限递归 */
     private boolean posting;
@@ -45,9 +56,9 @@ public class Digestion implements INBTSerializable<CompoundTag> {
         this(null);
     }
 
-    /** 由 {@link DigestionCapability.Provider} 在附加到玩家时调用 */
+    /** 由 {@link DigestionCapability.Provider} 在附加到玩家时调用（内部持弱引用） */
     public Digestion(Player owner) {
-        this.owner = owner;
+        this.owner = owner == null ? null : new WeakReference<>(owner);
         // 开局默认: 消化值/消化饱和度取配置起始值, 并 clamp 到各自上限 (直接赋值, 不触发溢出事件)
         float startD = HungerConfig.startDigestion();
         float startDS = HungerConfig.startDigestionSaturation();
@@ -93,15 +104,16 @@ public class Digestion implements INBTSerializable<CompoundTag> {
                 this.digestionSaturation - before);
     }
 
-    /** 统一的溢出广播口: 只有确实被 clamp 掉的量才发事件；手工 new 的实例 (owner=null) 不发 */
+    /** 统一的溢出广播口: 只有确实被 clamp 掉的量才发事件；手工 new 或无主实例不发 */
     private void postOverflow(DigestionOverflowEvent.Type type, float requested, float accepted) {
         float overflow = Math.max(0.0F, requested - accepted);
-        if (owner == null || posting || overflow <= 0.0F) {
+        Player player = owner == null ? null : owner.get();
+        if (player == null || posting || overflow <= 0.0F) {
             return;
         }
         posting = true;
         try {
-            MinecraftForge.EVENT_BUS.post(new DigestionOverflowEvent(owner, this, type,
+            MinecraftForge.EVENT_BUS.post(new DigestionOverflowEvent(player, this, type,
                     requested, accepted, overflow));
         } finally {
             posting = false;
@@ -128,12 +140,28 @@ public class Digestion implements INBTSerializable<CompoundTag> {
         this.lastAttrFactor = value;
     }
 
+    public float getLastAttackFactor() {
+        return lastAttackFactor;
+    }
+
+    public void setLastAttackFactor(float value) {
+        this.lastAttackFactor = value;
+    }
+
     public float getLastSwimFactor() {
         return lastSwimFactor;
     }
 
     public void setLastSwimFactor(float value) {
         this.lastSwimFactor = value;
+    }
+
+    public float getLastSyncedExhaustion() {
+        return lastSyncedExhaustion;
+    }
+
+    public void setLastSyncedExhaustion(float value) {
+        this.lastSyncedExhaustion = value;
     }
 
     public float getOverflowDigestionCache() {
@@ -185,7 +213,9 @@ public class Digestion implements INBTSerializable<CompoundTag> {
         this.digestionSaturation = targetSaturation;
         this.foodCarry = 0.0F;
         this.lastAttrFactor = 1.0F;
+        this.lastAttackFactor = 1.0F;
         this.lastSwimFactor = 1.0F;
+        this.lastSyncedExhaustion = -1.0F;
         this.overflowDigestionCache = 0.0F;
         this.overflowSaturationCache = 0.0F;
     }
@@ -211,8 +241,10 @@ public class Digestion implements INBTSerializable<CompoundTag> {
         this.foodCarry = Mth.clamp(tag.getFloat("FoodCarry"), 0.0F, 1.0F);
         setOverflowDigestionCache(tag.getFloat("OverflowDigestionCache"));   // 读回时按当前容量 clamp
         setOverflowSaturationCache(tag.getFloat("OverflowSaturationCache"));
-        // lastAttrFactor / lastSwimFactor 为瞬时缓存, 不持久化, 重置为 1 以便下次重新应用
+        // lastAttrFactor / lastAttackFactor / lastSwimFactor 为瞬时缓存, 不持久化, 重置为 1 以便下次重新应用
         this.lastAttrFactor = 1.0F;
+        this.lastAttackFactor = 1.0F;
         this.lastSwimFactor = 1.0F;
+        this.lastSyncedExhaustion = -1.0F;
     }
 }

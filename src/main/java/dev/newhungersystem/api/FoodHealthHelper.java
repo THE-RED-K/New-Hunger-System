@@ -63,6 +63,25 @@ public final class FoodHealthHelper {
     /** 每帧预生成的逐格心形偏移 (供外部 HUD 对齐叠加层；AppleSkin healthBarOffsets 同款) */
     public static final Vector<IntPoint> healthBarOffsets = new Vector<>();
 
+    /**
+     * 回血预估缓存 —— HUD 每个渲染帧都会请求同一次估算。
+     * 以「同一客户端 tick + 同一物品 + 同一状态」为 key 复用，把每帧的
+     * {@code FoodValuesEvent} 广播与 {@code simulateRegen} 降到每 tick 最多一次。
+     */
+    private static boolean estimateValid;
+    private static Player estimatePlayer;
+    private static int estimateTick;
+    private static ItemStack estimateStack = ItemStack.EMPTY;
+    private static int estimateFoodLevel;
+    private static float estimateSaturation;
+    private static float estimateHealth;
+    private static float estimateMaxHealth;
+    private static float estimateAbsorption;
+    private static float estimateDigestion;
+    private static float estimateDigestionSat;
+    private static FoodValuesEvent estimateValues;
+    private static float estimateRestored;
+
     /** 闪烁状态 (AppleSkin / DigestionOverlay 同款节拍: 每 tick ±0.125, [-0.5, 1.5] 往返) */
     private static float unclampedFlashAlpha = 0.0F;
     private static float flashAlpha = 0.0F;
@@ -80,6 +99,57 @@ public final class FoodHealthHelper {
      */
     public static float estimateHealthRestored(ItemStack stack, Player player) {
         return estimateHealthRestored(stack, player, FoodHelper.postFoodValuesEvent(player, stack));
+    }
+
+    /**
+     * HUD 专用：带缓存的 {@link #estimateHealthRestored(ItemStack, Player)}。
+     * <p>
+     * 同一客户端 tick 内（多帧渲染）、同一物品、同一玩家状态（饥饿/饱和/血量/吸收/消化）时
+     * 直接返回上次结果，不再广播 {@link FoodValuesEvent}、不再跑 {@code simulateRegen}。
+     * 任何一项变化都会立即重算，所以 HUD 数值不受影响。
+     */
+    public static float estimateHealthRestoredCached(ItemStack stack, Player player) {
+        if (!estimateCacheMatches(stack, player)) {
+            recomputeEstimate(stack, player);
+        }
+        return estimateRestored;
+    }
+
+    /** 最近一次 {@link #estimateHealthRestoredCached} 使用的事件（非食物/缓存为空时为 null） */
+    public static FoodValuesEvent cachedValuesEvent() {
+        return estimateValues;
+    }
+
+    private static boolean estimateCacheMatches(ItemStack stack, Player player) {
+        if (!estimateValid || player == null || estimatePlayer != player
+                || estimateTick != player.tickCount
+                || !ItemStack.isSameItemSameTags(estimateStack, stack)) {
+            return false;
+        }
+        return estimateFoodLevel == player.getFoodData().getFoodLevel()
+                && estimateSaturation == player.getFoodData().getSaturationLevel()
+                && estimateHealth == player.getHealth()
+                && estimateMaxHealth == player.getMaxHealth()
+                && estimateAbsorption == player.getAbsorptionAmount()
+                && estimateDigestion == ClientDigestionData.digestion
+                && estimateDigestionSat == ClientDigestionData.digestionSaturation;
+    }
+
+    private static void recomputeEstimate(ItemStack stack, Player player) {
+        estimateValid = true;
+        estimatePlayer = player;
+        estimateTick = player.tickCount;
+        estimateStack = stack;
+        estimateValues = FoodHelper.postFoodValuesEvent(player, stack);
+        estimateRestored = estimateValues == null ? 0.0F
+                : estimateHealthRestored(stack, player, estimateValues);
+        estimateFoodLevel = player.getFoodData().getFoodLevel();
+        estimateSaturation = player.getFoodData().getSaturationLevel();
+        estimateHealth = player.getHealth();
+        estimateMaxHealth = player.getMaxHealth();
+        estimateAbsorption = player.getAbsorptionAmount();
+        estimateDigestion = ClientDigestionData.digestion;
+        estimateDigestionSat = ClientDigestionData.digestionSaturation;
     }
 
     /**
@@ -131,7 +201,7 @@ public final class FoodHealthHelper {
         float satFinal = Math.min(player.getFoodData().getSaturationLevel() + effSatGain, hungerFinal);
 
         // ---- 阶段三: 按回血曲线离散模拟 (燃料账本) + 食物自带 Regeneration 折算 ----
-        float chainHeal = simulateRegen(player, hungerFinal, satFinal, digAfter);
+        float chainHeal = simulateRegen(player, hungerFinal, satFinal);
         float regenHeal = estimateFoodRegeneration(stack, player);
         return Math.min(maxHealth - health, chainHeal + regenHeal);
     }
@@ -157,16 +227,17 @@ public final class FoodHealthHelper {
     }
 
     /**
-     * 1:1 镜像 {@link FoodDataMixin#tick} 的回血分支火焰:
-     * 消耗值每满 maxExhaustion → 扣 1 点饱和度(快回燃料) 或 1 点饥饿值(慢回燃料);
+     * 1:1 镜像 {@link FoodDataMixin#tick} 的回血分支（双轨独立燃料账本）:
+     * 快轨每 fastRegenIntervalTicks 一次、<b>只烧饱和度</b>; 慢轨每 slowRegenIntervalTicks 一次、
+     * <b>只烧饥饿值</b>; 两本账各自累计满 maxExhaustion 扣 1 点对应燃料;
      * 共同钳制: hunger ≥ maxHunger×ratio (默认 0.6), 低于门槛两轨都停;
      * 快回: sat &gt; 0 &amp;&amp; isHurt; 慢回: hunger ≥ 门槛 &amp;&amp; isHurt (不要求 sat ≤ 0, 两轨并行);
-     * 单次回血 = foodRegenPercent(hunger)/100 × digRegenFactor, 每次回血消耗 heal×healCost 消耗值。
+     * 单次回血 = foodRegenPercent(hunger)/100 (消化值不影响回血), 每次回血消耗 heal×healCost 消耗值。
      * <p>
-     * 由于间隔(interval)只改变"多久回一次"而不改变总消耗/总回复比, 模拟按事件步进
-     * (不逐 tick), 与约束"忽略速率, 只看最终等量血量"一致。
+     * 两条轨道燃料不同, 所以不能像旧实现那样"按事件总数简并"——快轨吃满饱和度、慢轨吃满饥饿值,
+     * 必须按时序交替推演才能知道哪条轨先耗尽。间隔本身仍只影响"多久回一次", 不影响总消耗/总回复比。
      */
-    private static float simulateRegen(Player player, float hunger, float sat, float digAfter) {
+    private static float simulateRegen(Player player, float hunger, float sat) {
         float maxHealth = player.getMaxHealth();
         float health = player.getHealth();
         float recoverable = maxHealth - health;
@@ -180,28 +251,33 @@ public final class FoodHealthHelper {
         float threshold = maxHunger * HungerConfig.slowRegenHungerRatio();
         float healCost = HungerConfig.regenExhaustionPerHealth();
         float maxExhaustion = HungerConfig.maxExhaustion();
-        Difficulty difficulty = player.level().getDifficulty();
-        if (difficulty == Difficulty.PEACEFUL) {
-            // 和平不饿死: 饱和度耗光后饥饿值不再下降, 但慢回燃料理论上无限。
-            // 为守恒仍按非和平模拟; 由于快回消耗的是饱和度, 结果差异仅在 sat 耗尽后。
-        }
+        int fastInterval = Math.max(1, HungerConfig.fastRegenIntervalTicks());
+        int slowInterval = HungerConfig.slowRegenIntervalTicks();
 
-        // 消化过载因子按"吃后"消化值取 (刚进食过载最重, 保守估算);
-        // 与 FoodDataMixin.digRegenFactor 的公式相同 (digAttrFactor 代号复用)。
-        float factor = (float) StatFactors.digAttrFactor(digAfter);
-        if (factor <= 0.0F) {
-            return 0.0F;
-        }
-
-        float exhaustion = ClientDigestionData.exhaustion;   // 当前消耗值作为账本起点
+        float fastLedger = 0.0F;   // 快轨账本: 只结算饱和度
+        float slowLedger = 0.0F;   // 慢轨账本: 只结算饥饿值
+        int fastWait = fastInterval;
+        int slowWait = slowInterval;
         float recovered = 0.0F;
         int guard = 0;
-        while (recovered < recoverable && hunger > 0.001F && guard++ < MAX_SIM_STEPS) {
+        while (recovered < recoverable && guard++ < MAX_SIM_STEPS) {
             if (hunger < threshold) {
                 break;               // 共同钳制: 饥饿值低于门槛 → 快/慢两轨都停, 即使还有饱和度
             }
+            if (sat <= 0.0F) {
+                fastWait = Integer.MAX_VALUE;   // 快轨燃料耗尽后不会再启动 (模拟中饱和度只减不增)
+            }
+            // 取下一个到点的事件 (快轨/慢轨按各自节拍交替)
+            boolean fast = fastWait <= slowWait;
+            if (fast) {
+                slowWait -= fastWait;
+                fastWait = fastInterval;
+            } else {
+                fastWait -= slowWait;
+                slowWait = slowInterval;
+            }
             // 单次回血量 (1:1 镜像 FoodDataMixin; 饥饿值取整层给 foodRegenPercent)
-            float heal = StatFactors.foodRegenPercent((int) Math.floor(hunger)) / 100.0F * factor;
+            float heal = StatFactors.foodRegenPercent((int) Math.floor(hunger)) / 100.0F;
             if (heal <= 0.0F) {
                 break;               // 饥饿值太低的缩放惩罚到 0 → 回血停止
             }
@@ -210,14 +286,18 @@ public final class FoodHealthHelper {
                 break;
             }
             recovered += actual;
-            exhaustion += actual * healCost;
-            // 消耗值累计结算 (镜像 FoodDataMixin.tick 顶部, maxExhaustion 可配置)
-            while (exhaustion > maxExhaustion) {
-                exhaustion -= maxExhaustion;
-                if (sat > 0.0F) {
-                    sat -= 1.0F;                       // 先烧饱和度 (快回燃料)
-                } else if (difficulty != Difficulty.PEACEFUL) {
-                    hunger -= 1.0F;                    // 饱和度耗尽后烧饥饿 (慢回燃料)
+            float cost = actual * healCost;
+            if (fast) {
+                fastLedger += cost;
+                while (fastLedger > maxExhaustion) {
+                    fastLedger -= maxExhaustion;
+                    sat = Math.max(0.0F, sat - 1.0F);
+                }
+            } else {
+                slowLedger += cost;
+                while (slowLedger > maxExhaustion) {
+                    slowLedger -= maxExhaustion;
+                    hunger -= 1.0F;
                 }
             }
         }

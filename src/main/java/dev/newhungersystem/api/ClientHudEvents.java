@@ -99,9 +99,10 @@ public final class ClientHudEvents {
             return;
         }
         ItemStack held = FoodHealthHelper.getHeldFoodStack(mc.player);
-        FoodValuesEvent valuesEvent = FoodHelper.postFoodValuesEvent(mc.player, held);
-        float restored = FoodHealthHelper.estimateHealthRestored(held, mc.player, valuesEvent);
-        if (restored <= 0.0F || !FoodHealthHelper.canShowHealthEstimate(mc.player)) {
+        // 逐帧调用: 同一 tick 内复用上次结果 (避免每帧 post FoodValuesEvent + 跑回血模拟)
+        float restored = FoodHealthHelper.estimateHealthRestoredCached(held, mc.player);
+        FoodValuesEvent valuesEvent = FoodHealthHelper.cachedValuesEvent();
+        if (restored <= 0.0F || valuesEvent == null || !FoodHealthHelper.canShowHealthEstimate(mc.player)) {
             FoodHealthHelper.resetFlash();
             return;
         }
