@@ -361,11 +361,11 @@ public final class DigestionEvents {
                 digestion.setLastSyncedExhaustion(exhaustion);
                 sync = true;
             }
-            // 直接饥饿账本变化较慢, 阈值放宽以减少包量 (HUD 只做进度显示)
-            float directCarry = digestion.getDirectHungerCarry();
-            if (Math.abs(directCarry - digestion.getLastSyncedDirectHungerCarry()) >= 0.02F) {
-                digestion.setLastSyncedDirectHungerCarry(directCarry);
-                sync = true;
+            // 饱和度归零: 把直接饥饿账本的余数折算回普通消耗值, 让消耗条继续显示进度
+            if (data.getSaturationLevel() <= 0.0F && digestion.getDirectHungerCarry() > 0.0F) {
+                float carry = digestion.getDirectHungerCarry();
+                digestion.setDirectHungerCarry(0.0F);
+                player.causeFoodExhaustion(carry * HungerConfig.maxExhaustion());
             }
             // 速率受药水效果影响: 助消化每级 +20%, 消化不良每级 -20% (互相抵消, 下限 0),
             // 瞬间消化在此基础上再 ×10 (叠乘)。仍走同一条转化路径, 只是每次转得更多, 所以不会出现"一次清空"

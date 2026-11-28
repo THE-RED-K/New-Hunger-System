@@ -37,8 +37,6 @@ public class Digestion implements INBTSerializable<CompoundTag> {
     private float lastSyncedExhaustion = -1.0F;
     /** 直接饥饿账本 (0..1): 绕过饱和度的消耗累积, 满 1 点扣 1 点饥饿值 */
     private float directHungerCarry;
-    /** 上一次同步给客户端的直接饥饿账本 (-1 = 尚未同步) */
-    private float lastSyncedDirectHungerCarry = -1.0F;
     /** 溢出缓存 (默认关闭, 由 DigestionOverflowEvent 填充, 每 0.5s 回填) */
     private float overflowDigestionCache;
     private float overflowSaturationCache;
@@ -177,14 +175,6 @@ public class Digestion implements INBTSerializable<CompoundTag> {
         this.directHungerCarry = Mth.clamp(value, 0.0F, 1.0F);
     }
 
-    public float getLastSyncedDirectHungerCarry() {
-        return lastSyncedDirectHungerCarry;
-    }
-
-    public void setLastSyncedDirectHungerCarry(float value) {
-        this.lastSyncedDirectHungerCarry = value;
-    }
-
     public float getOverflowDigestionCache() {
         return overflowDigestionCache;
     }
@@ -238,7 +228,6 @@ public class Digestion implements INBTSerializable<CompoundTag> {
         this.lastSwimFactor = 1.0F;
         this.lastSyncedExhaustion = -1.0F;
         this.directHungerCarry = 0.0F;
-        this.lastSyncedDirectHungerCarry = -1.0F;
         this.overflowDigestionCache = 0.0F;
         this.overflowSaturationCache = 0.0F;
     }
@@ -270,6 +259,5 @@ public class Digestion implements INBTSerializable<CompoundTag> {
         this.lastSwimFactor = 1.0F;
         this.lastSyncedExhaustion = -1.0F;
         this.directHungerCarry = 0.0F;
-        this.lastSyncedDirectHungerCarry = -1.0F;
     }
 }

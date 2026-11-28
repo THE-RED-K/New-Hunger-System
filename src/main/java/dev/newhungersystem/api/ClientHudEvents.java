@@ -77,19 +77,6 @@ public final class ClientHudEvents {
                 DigestionOverlay.V_EXHAUSTION,
                 width, DigestionOverlay.EXHAUSTION_HEIGHT,
                 DigestionOverlay.TEXTURE_WIDTH, DigestionOverlay.TEXTURE_HEIGHT);
-        // 直接饥饿账本: 仅当饱和度为 0 时, 在上一行叠一条完全同款的消耗条。
-        // 饱和度 > 0 时饥饿值只会静默下降, 不显示进度 (避免提示"还没掉饥饿"的假象)。
-        float directCarry = ClientDigestionData.directHungerCarry;
-        if (directCarry > 0.0F && mc.player.getFoodData().getSaturationLevel() <= 0.0F) {
-            int directWidth = (int) (Math.min(1.0F, directCarry) * DigestionOverlay.EXHAUSTION_WIDTH);
-            if (directWidth > 0) {
-                graphics.blit(DigestionOverlay.TEXTURE, right - directWidth, top - 10,
-                        DigestionOverlay.U_EXHAUSTION + (DigestionOverlay.EXHAUSTION_WIDTH - directWidth),
-                        DigestionOverlay.V_EXHAUSTION,
-                        directWidth, DigestionOverlay.EXHAUSTION_HEIGHT,
-                        DigestionOverlay.TEXTURE_WIDTH, DigestionOverlay.TEXTURE_HEIGHT);
-            }
-        }
         RenderSystem.disableBlend();
         RenderSystem.setShaderColor(1.0F, 1.0F, 1.0F, 1.0F);
     }

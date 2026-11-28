@@ -69,16 +69,24 @@ public final class DigestionHelper {
     /**
      * 绕过饱和度、直接消耗饥饿值。
      * <p>
-     * 消耗单位与 {@code causeFoodExhaustion} 相同（{@code maxExhaustion} 点消耗值 = 1 点饥饿值），
-     * 但不再进入 {@code exhaustionLevel} 的“先烧饱和度”结算；小数部分累积在
-     * {@link Digestion#getDirectHungerCarry()} 中，满 1 点才真正扣饥饿值。
-     * 创造 / 旁观 / 客户端调用直接忽略；扣减后同步收敛饱和度以维持 {@code sat <= foodLevel}。
+     * 饱和度 &gt; 0 时：消耗不再进入 {@code exhaustionLevel}，而是累积在
+     * {@link Digestion#getDirectHungerCarry()} 中，满 1 点立即扣 1 点饥饿值（静默，不经过饱和度）。
+     * <p>
+     * 饱和度 = 0 时：原版结算本来就会扣饥饿值，这三项与普通活动没有区别，
+     * 直接走 {@code causeFoodExhaustion}，让 HUD 的消耗条继续反映真实进度。
+     * <p>
+     * 创造 / 旁观 / 客户端调用直接忽略；直接扣减后同步收敛饱和度以维持 {@code sat <= foodLevel}。
      *
      * @param exhaustionAmount 消耗值（与其它活动消耗同一单位）
      */
     public static void consumeHungerDirect(Player player, float exhaustionAmount) {
         if (player == null || exhaustionAmount <= 0.0F || player.isCreative() || player.isSpectator()
                 || player.level().isClientSide()) {
+            return;
+        }
+        if (player.getFoodData().getSaturationLevel() <= 0.0F) {
+            // 饱和度已空: 与普通活动完全一致, 走原版账本 (HUD 条继续显示)
+            player.causeFoodExhaustion(exhaustionAmount);
             return;
         }
         Digestion data = get(player);

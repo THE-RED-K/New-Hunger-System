@@ -19,9 +19,9 @@ public final class ModNetwork {
 
     public static final SimpleChannel CHANNEL = NetworkRegistry.newSimpleChannel(
             ResourceLocation.fromNamespaceAndPath(NewHungerSystem.MOD_ID, "main"),
-            () -> "1.3.0",
-            "1.3.0"::equals,
-            "1.3.0"::equals);
+            () -> "1.0.0",
+            "1.0.0"::equals,
+            "1.0.0"::equals);
 
     private ModNetwork() {
     }
@@ -41,7 +41,7 @@ public final class ModNetwork {
         }
         CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
                 new DigestionSyncPacket(digestion.getDigestion(), digestion.getDigestionSaturation(),
-                        player.getFoodData().getExhaustionLevel(), digestion.getDirectHungerCarry(),
+                        player.getFoodData().getExhaustionLevel(),
                         HungerConfig.serverMaxHunger(), HungerConfig.serverMaxSaturation(),
                         HungerConfig.serverMaxDigestion(), HungerConfig.serverMaxDigestionSaturation()));
     }
