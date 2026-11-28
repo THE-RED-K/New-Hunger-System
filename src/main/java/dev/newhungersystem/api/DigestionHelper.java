@@ -2,6 +2,7 @@ package dev.newhungersystem.api;
 
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.food.FoodData;
 
 import java.util.Optional;
 
@@ -63,6 +64,38 @@ public final class DigestionHelper {
         // 事件由 Digestion 数据层统一广播 (含第三方直接拿 Capability 写入的路径), 此处不重复发
         data.addDigestion(amount);
         return data.getDigestion() - before;
+    }
+
+    /**
+     * 绕过饱和度、直接消耗饥饿值。
+     * <p>
+     * 消耗单位与 {@code causeFoodExhaustion} 相同（{@code maxExhaustion} 点消耗值 = 1 点饥饿值），
+     * 但不再进入 {@code exhaustionLevel} 的“先烧饱和度”结算；小数部分累积在
+     * {@link Digestion#getDirectHungerCarry()} 中，满 1 点才真正扣饥饿值。
+     * 创造 / 旁观 / 客户端调用直接忽略；扣减后同步收敛饱和度以维持 {@code sat <= foodLevel}。
+     *
+     * @param exhaustionAmount 消耗值（与其它活动消耗同一单位）
+     */
+    public static void consumeHungerDirect(Player player, float exhaustionAmount) {
+        if (player == null || exhaustionAmount <= 0.0F || player.isCreative() || player.isSpectator()
+                || player.level().isClientSide()) {
+            return;
+        }
+        Digestion data = get(player);
+        if (data == null) {
+            return;
+        }
+        float points = exhaustionAmount / Math.max(0.1F, HungerConfig.maxExhaustion());
+        float carry = data.getDirectHungerCarry() + points;
+        int whole = (int) carry;
+        if (whole > 0) {
+            carry -= whole;
+            FoodData food = player.getFoodData();
+            int newFood = Math.max(0, food.getFoodLevel() - whole);
+            food.setFoodLevel(newFood);
+            food.setSaturation(Math.min(food.getSaturationLevel(), newFood));
+        }
+        data.setDirectHungerCarry(carry);
     }
 
     /** 增加消化饱和度；超出上限部分由 {@link Digestion} 广播 {@link DigestionOverflowEvent} */

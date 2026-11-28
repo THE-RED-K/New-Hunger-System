@@ -144,6 +144,12 @@ public final class HungerConfig {
     public static final ForgeConfigSpec.DoubleValue SPRINT_JUMP_EXHAUSTION;
     /** 破坏方块: 消耗值 = 该系数 × 方块硬度 */
     public static final ForgeConfigSpec.DoubleValue BLOCK_BREAK_EXHAUSTION_PER_HARDNESS;
+    /** 疾跑是否绕过饱和度、直接扣饥饿值 */
+    public static final ForgeConfigSpec.BooleanValue SPRINT_CONSUMES_HUNGER_DIRECTLY;
+    /** 冲刺跳是否绕过饱和度、直接扣饥饿值 */
+    public static final ForgeConfigSpec.BooleanValue SPRINT_JUMP_CONSUMES_HUNGER_DIRECTLY;
+    /** 近战命中是否绕过饱和度、直接扣饥饿值 */
+    public static final ForgeConfigSpec.BooleanValue ATTACK_CONSUMES_HUNGER_DIRECTLY;
 
     // ---------------- 溢出缓存 (overflow) ----------------
 
@@ -394,6 +400,17 @@ public final class HungerConfig {
                         "Vanilla uses a flat 0.005 per block. Default 0.01 (= stone hardness 1.5 -> 0.015).",
                         "Instant-break blocks (hardness 0) cost nothing.")
                 .defineInRange("blockBreakExhaustionPerHardness", 0.01D, 0.0D, 100.0D);
+        SPRINT_CONSUMES_HUNGER_DIRECTLY = builder
+                .comment("If true, sprinting drains HUNGER directly and skips saturation,",
+                        "using the same per-meter value converted by maxExhaustion (4 exhaustion = 1 hunger).",
+                        "Default false (vanilla order: saturation first).")
+                .define("sprintConsumesHungerDirectly", false);
+        SPRINT_JUMP_CONSUMES_HUNGER_DIRECTLY = builder
+                .comment("If true, sprint-jumping drains HUNGER directly and skips saturation. Default false.")
+                .define("sprintJumpConsumesHungerDirectly", false);
+        ATTACK_CONSUMES_HUNGER_DIRECTLY = builder
+                .comment("If true, a successful melee hit drains HUNGER directly and skips saturation. Default false.")
+                .define("attackConsumesHungerDirectly", false);
         builder.pop();
 
         builder.push("overflow");
@@ -716,6 +733,21 @@ public final class HungerConfig {
 
     public static float blockBreakExhaustionPerHardness() {
         return dbl(BLOCK_BREAK_EXHAUSTION_PER_HARDNESS, 0.01F);
+    }
+
+    /** 疾跑是否绕过饱和度、直接扣饥饿值 (默认 false) */
+    public static boolean sprintConsumesHungerDirectly() {
+        return flag(SPRINT_CONSUMES_HUNGER_DIRECTLY, false);
+    }
+
+    /** 冲刺跳是否绕过饱和度、直接扣饥饿值 (默认 false) */
+    public static boolean sprintJumpConsumesHungerDirectly() {
+        return flag(SPRINT_JUMP_CONSUMES_HUNGER_DIRECTLY, false);
+    }
+
+    /** 近战命中是否绕过饱和度、直接扣饥饿值 (默认 false) */
+    public static boolean attackConsumesHungerDirectly() {
+        return flag(ATTACK_CONSUMES_HUNGER_DIRECTLY, false);
     }
 
     public static float maxExhaustion() {

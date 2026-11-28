@@ -1,5 +1,6 @@
 package dev.newhungersystem.mixin;
 
+import dev.newhungersystem.api.DigestionHelper;
 import dev.newhungersystem.api.HungerConfig;
 import net.minecraft.tags.FluidTags;
 import net.minecraft.world.entity.player.Player;
@@ -23,11 +24,6 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  *       避免与原版数值重复计费。handler 只接收 {@code (Player, float)}，不依赖任何参数捕获。</li>
  * </ol>
  * 这样原方法体、{@code Stats.*_ONE_CM} 统计与其它模组的注入点全部保留。
- * <p>
- * 为什么不用 {@code @ModifyArg}：Mixin 0.8.5 的 handler 只能拿到被替换的实参，无法捕获宿主参数
- * （实测 {@code targets a method with an invalid signature (F), expected (FDDD)}）。
- * 为什么不让 {@code @Redirect} 直接捕获宿主参数：该特性在不同 Mixin 版本/组合下不稳定，
- * 而“HEAD 计费 + Redirect 归零”只依赖最基础的 {@code @Inject} 参数捕获，风险最低。
  *
  * @author THEREDK
  */
@@ -68,7 +64,12 @@ public abstract class PlayerExhaustionMixin {
             float meters = distance2d(dx, dz);
             if (meters > 0.0F) {
                 if (self.isSprinting()) {
-                    self.causeFoodExhaustion(meters * HungerConfig.sprintExhaustionPerMeter());
+                    float amount = meters * HungerConfig.sprintExhaustionPerMeter();
+                    if (HungerConfig.sprintConsumesHungerDirectly()) {
+                        DigestionHelper.consumeHungerDirect(self, amount);
+                    } else {
+                        self.causeFoodExhaustion(amount);
+                    }
                 } else if (self.isCrouching()) {
                     self.causeFoodExhaustion(meters * HungerConfig.crouchExhaustionPerMeter());
                 } else {
@@ -138,7 +139,12 @@ public abstract class PlayerExhaustionMixin {
     @Redirect(method = "attack",
             at = @At(value = "INVOKE", target = "Lnet/minecraft/world/entity/player/Player;causeFoodExhaustion(F)V"))
     private void newHungerSystem$attackExhaustion(Player player, float amount) {
-        player.causeFoodExhaustion(HungerConfig.attackExhaustion());
+        float exhaustion = HungerConfig.attackExhaustion();
+        if (HungerConfig.attackConsumesHungerDirectly()) {
+            DigestionHelper.consumeHungerDirect(player, exhaustion);
+        } else {
+            player.causeFoodExhaustion(exhaustion);
+        }
     }
 
     /** 冲刺跳（原版 0.2，是 jumpFromGround 里的第 1 处调用）。 */
@@ -146,7 +152,12 @@ public abstract class PlayerExhaustionMixin {
             at = @At(value = "INVOKE", target = "Lnet/minecraft/world/entity/player/Player;causeFoodExhaustion(F)V",
                     ordinal = 0))
     private void newHungerSystem$sprintJumpExhaustion(Player player, float amount) {
-        player.causeFoodExhaustion(HungerConfig.sprintJumpExhaustion());
+        float exhaustion = HungerConfig.sprintJumpExhaustion();
+        if (HungerConfig.sprintJumpConsumesHungerDirectly()) {
+            DigestionHelper.consumeHungerDirect(player, exhaustion);
+        } else {
+            player.causeFoodExhaustion(exhaustion);
+        }
     }
 
     /** 普通跳跃（原版 0.05，是 jumpFromGround 里的第 2 处调用）。 */

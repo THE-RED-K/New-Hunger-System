@@ -27,11 +27,6 @@ import org.spongepowered.asm.mixin.injection.Redirect;
 @Mixin(Block.class)
 public abstract class BlockBreakExhaustionMixin {
 
-    /**
-     * 必须是<b>实例方法</b>（Mixin 要求 handler 与目标方法的静态修饰符一致；
-     * {@code Block#playerDestroy} 是实例方法，写成 static 会报
-     * {@code 'static' modifier of handler method does not match target}）。
-     */
     @Redirect(method = "playerDestroy",
             at = @At(value = "INVOKE", target = "Lnet/minecraft/world/entity/player/Player;causeFoodExhaustion(F)V"))
     private void newHungerSystem$blockBreakExhaustion(Player player, float original,
