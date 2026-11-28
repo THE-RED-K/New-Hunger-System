@@ -52,6 +52,8 @@ public class Digestion implements INBTSerializable<CompoundTag> {
 
     /** 事件重入保护: 监听器在事件里同步回写 Capability 时不再二次广播, 避免无限递归 */
     private boolean posting;
+    /** {@link DigestionChangedEvent} 的重入保护（与溢出事件分开, 两者可同时发生） */
+    private boolean changedPosting;
 
     /** 无 owner 构造: 供测试/第三方手工实例化, 不广播事件 */
     public Digestion() {
@@ -84,6 +86,9 @@ public class Digestion implements INBTSerializable<CompoundTag> {
         this.digestionSaturation = Mth.clamp(this.digestionSaturation, 0.0F,
                 Math.min(maxDigestionSaturation(), this.digestion));
         postOverflow(DigestionOverflowEvent.Type.DIGESTION, requested, this.digestion - before);
+        if (Math.abs(this.digestion - before) > 1e-5F) {
+            postChanged(DigestionChangedEvent.Type.DIGESTION, before, this.digestion);
+        }
     }
 
     public void addDigestion(float value) {
@@ -104,6 +109,23 @@ public class Digestion implements INBTSerializable<CompoundTag> {
         this.digestionSaturation = Mth.clamp(value, 0.0F, Math.min(maxDigestionSaturation(), this.digestion));
         postOverflow(DigestionOverflowEvent.Type.DIGESTION_SATURATION, requested,
                 this.digestionSaturation - before);
+        if (Math.abs(this.digestionSaturation - before) > 1e-5F) {
+            postChanged(DigestionChangedEvent.Type.DIGESTION_SATURATION, before, this.digestionSaturation);
+        }
+    }
+
+    /** 变化通知广播口（只读事件, 带重入保护） */
+    private void postChanged(DigestionChangedEvent.Type type, float oldValue, float newValue) {
+        Player player = owner == null ? null : owner.get();
+        if (player == null || changedPosting) {
+            return;
+        }
+        changedPosting = true;
+        try {
+            MinecraftForge.EVENT_BUS.post(new DigestionChangedEvent(player, this, type, oldValue, newValue));
+        } finally {
+            changedPosting = false;
+        }
     }
 
     /** 统一的溢出广播口: 只有确实被 clamp 掉的量才发事件；手工 new 或无主实例不发 */

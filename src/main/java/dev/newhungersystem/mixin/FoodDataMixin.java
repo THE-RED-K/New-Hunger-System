@@ -1,6 +1,7 @@
 package dev.newhungersystem.mixin;
 
 import dev.newhungersystem.api.HungerConfig;
+import dev.newhungersystem.api.StarvationDamageEvent;
 import dev.newhungersystem.api.StatFactors;
 import net.minecraft.world.Difficulty;
 import net.minecraft.world.entity.player.Player;
@@ -137,8 +138,11 @@ public abstract class FoodDataMixin {
         if (this.foodLevel <= 0) {
             this.tickTimer++;
             if (this.tickTimer >= HungerConfig.starveDamageIntervalTicks()) {
-                player.hurt(player.damageSources().starve(), HungerConfig.starveDamageAmount());
                 this.tickTimer = 0;
+                StarvationDamageEvent event = new StarvationDamageEvent(player, HungerConfig.starveDamageAmount());
+                if (!net.minecraftforge.common.MinecraftForge.EVENT_BUS.post(event)) {
+                    player.hurt(player.damageSources().starve(), event.getAmount());
+                }
             }
         } else {
             // 三个分支都没命中时归零计时器, 避免跨状态累积造成瞬间掉血。

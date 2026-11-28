@@ -81,6 +81,9 @@
 - **死亡损失**：`deathHungerLossPercent` / `deathSaturationLossPercent` / `deathDigestionLossPercent` /
   `deathDigestionSaturationLossPercent`（各默认 0 = 关闭），按**当前值**的百分比扣减，复活后数值 = 当前值 × (1 − pct%)；
   先扣损失再做低饥饿保底，因此保底仍然是最低值。
+- **死亡消化值开关**：`keepDigestionOnDeath`（默认 true）与 `keepHungerOnRespawn` 完全独立；
+  设为 false 时死亡后消化值/消化饱和度重置为 `startDigestion` / `startDigestionSaturation`，
+  并跳过消化部分的死亡损失百分比（不会"清空后再扣一遍"）。非死亡 Clone（维度切换）永远保留。
 
 ### HUD（仿 AppleSkin，可逐项关闭）
 
@@ -149,7 +152,7 @@
 | `food` | 随时进食、效果重定向、`digestionPerNutrition`、`digestionOverrides` |
 | `overflow` | 溢出缓存开关（默认 false）与容量 |
 | `peaceful` | `disablePeacefulAutoRegen`（默认 true）：禁用和平模式自动回血/自动补饥饿，和平模式饥饿照常消耗 |
-| `respawn` | 死亡是否保留饥饿值、低饥饿死亡复活保底（`starvationRespawnHungerPercent`，默认 30%，0 = 关闭）、四项死亡损失百分比（默认 0 = 关闭） |
+| `respawn` | 死亡是否保留饥饿值（`keepHungerOnRespawn`）、死亡是否保留消化值（`keepDigestionOnDeath`，独立开关）、低饥饿死亡复活保底（`starvationRespawnHungerPercent`，默认 30%，0 = 关闭）、四项死亡损失百分比（默认 0 = 关闭） |
 | `sleep` | 起床后四项数值的增减（默认 0） |
 | 客户端 | 消化条/饱和叠层/手持预显/消耗值底栏/数字/F3/原版抖动 + AppleSkin 兼容抑制 |
 

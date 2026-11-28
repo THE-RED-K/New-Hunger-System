@@ -83,30 +83,33 @@ public final class DigestionEvents {
     @SubscribeEvent
     public static void onPlayerClone(PlayerEvent.Clone event) {
         event.getOriginal().reviveCaps();
-        // 非死亡 Clone (维度切换 / 末地返回) 必须原样保留; 死亡复位则由配置决定。
-        boolean keep = !event.isWasDeath() || HungerConfig.keepHungerOnRespawn();
-        if (keep) {
-            Digestion old = event.getOriginal().getCapability(DigestionCapability.DIGESTION).orElse(null);
-            if (old != null) {
-                event.getEntity().getCapability(DigestionCapability.DIGESTION)
-                        .ifPresent(current -> current.deserializeNBT(old.serializeNBT()));
-            }
-            // 死亡复活且配置保留: 恢复死亡前的饥饿值/饱和度 (覆盖原版 20/5 重置)
-            if (event.isWasDeath()) {
-                FoodData oldFood = event.getOriginal().getFoodData();
-                FoodData newFood = event.getEntity().getFoodData();
-                newFood.setFoodLevel(oldFood.getFoodLevel());
-                newFood.setSaturation(oldFood.getSaturationLevel());
-            }
-        } else {
-            // keepHungerOnRespawn=false: FoodData 已由构造器重建为开局值, 消化值也必须同步重置,
-            // 否则旧消化值会按 baseDigestionRate 重新转成饥饿值, 绕过"重置"语义。
-            // resetToStart 同时清掉 foodCarry 与属性因子缓存; 属性由下个 10-tick 重算, 同步由 onPlayerRespawn 完成。
+        // 非死亡 Clone (维度切换 / 末地返回) 必须原样保留; 死亡复位则由两个独立开关分别决定。
+        boolean wasDeath = event.isWasDeath();
+        boolean keepFood = !wasDeath || HungerConfig.keepHungerOnRespawn();
+        boolean keepDigestion = !wasDeath || HungerConfig.keepDigestionOnDeath();
+
+        Digestion old = event.getOriginal().getCapability(DigestionCapability.DIGESTION).orElse(null);
+        if (keepDigestion && old != null) {
+            event.getEntity().getCapability(DigestionCapability.DIGESTION)
+                    .ifPresent(current -> current.deserializeNBT(old.serializeNBT()));
+        } else if (wasDeath) {
+            // keepDigestionOnDeath=false: 重置为开局消化值, 避免旧消化值在复活后继续转化出饥饿值。
+            // resetToStart 同时清掉 foodCarry、直接饥饿账本与属性因子缓存。
             event.getEntity().getCapability(DigestionCapability.DIGESTION)
                     .ifPresent(Digestion::resetToStart);
         }
-        // 死亡损失 (四项各自独立, 默认全 0 = 关闭): 先按百分比扣减, 再做低饥饿保底
-        applyDeathStatLoss(event);
+
+        if (keepFood && wasDeath) {
+            // 恢复死亡前的饥饿值/饱和度 (覆盖原版 20/5 重置)
+            FoodData oldFood = event.getOriginal().getFoodData();
+            FoodData newFood = event.getEntity().getFoodData();
+            newFood.setFoodLevel(oldFood.getFoodLevel());
+            newFood.setSaturation(oldFood.getSaturationLevel());
+        }
+
+        // 死亡损失 (四项各自独立, 默认全 0 = 关闭): 先按百分比扣减, 再做低饥饿保底。
+        // 消化值已被清空为开局值时不再扣消化损失, 避免"清空 + 再扣 50%"的双重惩罚。
+        applyDeathStatLoss(event, keepDigestion);
         // 低饥饿死亡保底: 死前饥饿值低于阈值 → 复活补到阈值 (默认 30% maxHunger, 0 = 关闭)
         applyStarvationRespawnFloor(event);
         event.getOriginal().invalidateCaps();
@@ -118,15 +121,17 @@ public final class DigestionEvents {
      * 四项各自由独立配置控制, 默认全 0 即整个机制关闭。基准是"复活流程已确定的数值"——
      * {@code keepHungerOnRespawn=true} 时是死前值, false 时是开局值。
      * 消化值/消化饱和度都按<b>扣减前</b>的值计算百分比, 最后按 {@code sat <= digestion} 不变量 clamp。
+     *
+     * @param applyDigestionLoss false 表示消化值已被重置为开局值, 跳过消化部分 (避免双重惩罚)
      */
-    private static void applyDeathStatLoss(PlayerEvent.Clone event) {
+    private static void applyDeathStatLoss(PlayerEvent.Clone event, boolean applyDigestionLoss) {
         if (!event.isWasDeath()) {
             return;
         }
         float hungerLoss = HungerConfig.deathHungerLossPercent();
         float satLoss = HungerConfig.deathSaturationLossPercent();
-        float digLoss = HungerConfig.deathDigestionLossPercent();
-        float digSatLoss = HungerConfig.deathDigestionSaturationLossPercent();
+        float digLoss = applyDigestionLoss ? HungerConfig.deathDigestionLossPercent() : 0.0F;
+        float digSatLoss = applyDigestionLoss ? HungerConfig.deathDigestionSaturationLossPercent() : 0.0F;
         if (hungerLoss <= 0.0F && satLoss <= 0.0F && digLoss <= 0.0F && digSatLoss <= 0.0F) {
             return;   // 全 0 = 关闭
         }
@@ -248,16 +253,12 @@ public final class DigestionEvents {
         if (digestion == null) {
             return;
         }
-        // 取值优先级: 配置层覆盖 > 代码登记层 > nutrition * digestionPerNutrition(默认 1:1)
-        // 三层都算完后再广播 FoodDigestionEvent, 监听器拿到的就是最终默认值, 仍可继续改写/取消
-        Float override = FoodDigestionValues.resolve(event.getItem());
-        float gain = override != null
-                ? override
-                : Math.max(0.0F, food.getNutrition() * HungerConfig.digestionPerNutrition());
-        // 消化饱和度沿用原版 FoodData.eat() 的换算:
-        //   saturationLevel += nutrition × saturationModifier × 2.0F
-        // 这里把 "nutrition" 换成上面解析出的消化值增益, 因此饱和比例跟随倍率/覆盖值一起缩放。
-        float defaultSatGain = Math.max(0.0F, gain * food.getSaturationModifier() * 2.0F);
+        // 解析阶段已广播 FoodDigestionValueEvent, HUD/tooltip/进食共用同一结果;
+        // 之后仍广播 FoodDigestionEvent, 监听器可继续改写/取消本次进食结算。
+        FoodValues defaults = DigestionHelper.defaultFoodValues(player, event.getItem(), food);
+        float gain = defaults.digestion;
+        // 消化饱和度沿用原版 FoodData.eat() 的换算: saturation += nutrition × satMod × 2
+        float defaultSatGain = defaults.digestionSaturation;
         FoodDigestionEvent foodEvent = new FoodDigestionEvent(player, event.getItem(), food, gain, defaultSatGain);
         boolean cancelled = MinecraftForge.EVENT_BUS.post(foodEvent);
         if (!cancelled) {
@@ -371,6 +372,10 @@ public final class DigestionEvents {
             // 瞬间消化在此基础上再 ×10 (叠乘)。仍走同一条转化路径, 只是每次转得更多, 所以不会出现"一次清空"
             float rate = HungerConfig.BASE_DIGESTION_RATE.get().floatValue()
                     * ModMobEffects.rateMultiplier(player);
+            // 基础速率可被附属模组修改 (不含过载加速, 加速在其后乘算)
+            DigestionRateEvent rateEvent = new DigestionRateEvent(player, digestion, rate);
+            MinecraftForge.EVENT_BUS.post(rateEvent);
+            rate = rateEvent.getRate();
             // 过载加速: 消化值进入惩罚区后, 「消化值 → 饥饿值」的速率随消化值线性放大
             // (惩罚起点 ×1, 满值 ×1.5, 与惩罚区同一起点配置)。只加速主转化, 不动消化饱和度,
             // 否则饱和度会先把饥饿值填满、反把主转化堵住, 与"缓解吃撑"的意图相反。
@@ -448,6 +453,7 @@ public final class DigestionEvents {
                                 false, true, true));
                     }
                     sync = true;
+                    MinecraftForge.EVENT_BUS.post(new DigestionVomitPostEvent(player, digestion));
                 }
             }
         }

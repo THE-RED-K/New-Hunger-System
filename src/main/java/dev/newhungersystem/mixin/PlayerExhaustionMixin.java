@@ -1,6 +1,7 @@
 package dev.newhungersystem.mixin;
 
 import dev.newhungersystem.api.DigestionHelper;
+import dev.newhungersystem.api.ExhaustionEvent;
 import dev.newhungersystem.api.HungerConfig;
 import net.minecraft.tags.FluidTags;
 import net.minecraft.world.entity.player.Player;
@@ -44,21 +45,25 @@ public abstract class PlayerExhaustionMixin {
         if (self.isSwimming()) {
             float meters = distance3d(dx, dy, dz);
             if (meters > 0.0F) {
-                self.causeFoodExhaustion(meters * HungerConfig.swimExhaustionPerMeter());
+                DigestionHelper.applyExhaustion(self, meters * HungerConfig.swimExhaustionPerMeter(),
+                        ExhaustionEvent.Source.SWIM);
             }
         } else if (self.isEyeInFluid(FluidTags.WATER)) {
             float meters = distance3d(dx, dy, dz);
             if (meters > 0.0F) {
-                self.causeFoodExhaustion(meters * HungerConfig.walkUnderWaterExhaustionPerMeter());
+                DigestionHelper.applyExhaustion(self, meters * HungerConfig.walkUnderWaterExhaustionPerMeter(),
+                        ExhaustionEvent.Source.WALK_UNDER_WATER);
             }
         } else if (self.isInWater()) {
             float meters = distance2d(dx, dz);
             if (meters > 0.0F) {
-                self.causeFoodExhaustion(meters * HungerConfig.walkOnWaterExhaustionPerMeter());
+                DigestionHelper.applyExhaustion(self, meters * HungerConfig.walkOnWaterExhaustionPerMeter(),
+                        ExhaustionEvent.Source.WALK_ON_WATER);
             }
         } else if (self.onClimbable()) {
             if (dy > 0.0D) {
-                self.causeFoodExhaustion((float) dy * HungerConfig.climbExhaustionPerMeter());
+                DigestionHelper.applyExhaustion(self, (float) dy * HungerConfig.climbExhaustionPerMeter(),
+                        ExhaustionEvent.Source.CLIMB);
             }
         } else if (self.onGround()) {
             float meters = distance2d(dx, dz);
@@ -68,12 +73,14 @@ public abstract class PlayerExhaustionMixin {
                     if (HungerConfig.sprintConsumesHungerDirectly()) {
                         DigestionHelper.consumeHungerDirect(self, amount);
                     } else {
-                        self.causeFoodExhaustion(amount);
+                        DigestionHelper.applyExhaustion(self, amount, ExhaustionEvent.Source.SPRINT);
                     }
                 } else if (self.isCrouching()) {
-                    self.causeFoodExhaustion(meters * HungerConfig.crouchExhaustionPerMeter());
+                    DigestionHelper.applyExhaustion(self, meters * HungerConfig.crouchExhaustionPerMeter(),
+                            ExhaustionEvent.Source.CROUCH);
                 } else {
-                    self.causeFoodExhaustion(meters * HungerConfig.walkExhaustionPerMeter());
+                    DigestionHelper.applyExhaustion(self, meters * HungerConfig.walkExhaustionPerMeter(),
+                            ExhaustionEvent.Source.WALK);
                 }
             }
         }
@@ -130,7 +137,8 @@ public abstract class PlayerExhaustionMixin {
     @Redirect(method = "hurt",
             at = @At(value = "INVOKE", target = "Lnet/minecraft/world/entity/player/Player;causeFoodExhaustion(F)V"))
     private void newHungerSystem$damageExhaustion(Player player, float amount) {
-        player.causeFoodExhaustion(amount * HungerConfig.damageExhaustionMultiplier());
+        DigestionHelper.applyExhaustion(player, amount * HungerConfig.damageExhaustionMultiplier(),
+                ExhaustionEvent.Source.HURT);
     }
 
     /**
@@ -143,7 +151,7 @@ public abstract class PlayerExhaustionMixin {
         if (HungerConfig.attackConsumesHungerDirectly()) {
             DigestionHelper.consumeHungerDirect(player, exhaustion);
         } else {
-            player.causeFoodExhaustion(exhaustion);
+            DigestionHelper.applyExhaustion(player, exhaustion, ExhaustionEvent.Source.ATTACK);
         }
     }
 
@@ -156,7 +164,7 @@ public abstract class PlayerExhaustionMixin {
         if (HungerConfig.sprintJumpConsumesHungerDirectly()) {
             DigestionHelper.consumeHungerDirect(player, exhaustion);
         } else {
-            player.causeFoodExhaustion(exhaustion);
+            DigestionHelper.applyExhaustion(player, exhaustion, ExhaustionEvent.Source.SPRINT_JUMP);
         }
     }
 
@@ -165,7 +173,7 @@ public abstract class PlayerExhaustionMixin {
             at = @At(value = "INVOKE", target = "Lnet/minecraft/world/entity/player/Player;causeFoodExhaustion(F)V",
                     ordinal = 1))
     private void newHungerSystem$jumpExhaustion(Player player, float amount) {
-        player.causeFoodExhaustion(HungerConfig.jumpExhaustion());
+        DigestionHelper.applyExhaustion(player, HungerConfig.jumpExhaustion(), ExhaustionEvent.Source.JUMP);
     }
 
     /** 原版按 cm 取整后再换算成米，这里保持同样的取整，避免与统计漂移。 */

@@ -76,12 +76,8 @@ public final class FoodHelper {
         if (food == null) {
             return null;
         }
-        Float override = FoodDigestionValues.resolve(stack);
-        float digestion = override != null
-                ? override
-                : Math.max(0.0F, food.getNutrition() * HungerConfig.digestionPerNutrition());
-        float saturation = Math.max(0.0F, digestion * food.getSaturationModifier() * 2.0F);
-        FoodValues values = new FoodValues(digestion, saturation);
+        FoodValues defaults = DigestionHelper.defaultFoodValues(player, stack, food);
+        FoodValues values = new FoodValues(defaults.digestion, defaults.digestionSaturation);
         FoodValuesEvent event = new FoodValuesEvent(player, stack, values, values);
         MinecraftForge.EVENT_BUS.post(event);
         return event;

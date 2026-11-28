@@ -3,6 +3,9 @@ package dev.newhungersystem.api;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.food.FoodData;
+import net.minecraft.world.food.FoodProperties;
+import net.minecraft.world.item.ItemStack;
+import net.minecraftforge.common.MinecraftForge;
 
 import java.util.Optional;
 
@@ -84,16 +87,25 @@ public final class DigestionHelper {
                 || player.level().isClientSide()) {
             return;
         }
+        ExhaustionEvent event = new ExhaustionEvent(player, exhaustionAmount,
+                ExhaustionEvent.Source.DIRECT_HUNGER);
+        if (MinecraftForge.EVENT_BUS.post(event)) {
+            return;
+        }
+        float amount = event.getAmount();
+        if (amount <= 0.0F) {
+            return;
+        }
         if (player.getFoodData().getSaturationLevel() <= 0.0F) {
             // 饱和度已空: 与普通活动完全一致, 走原版账本 (HUD 条继续显示)
-            player.causeFoodExhaustion(exhaustionAmount);
+            player.causeFoodExhaustion(amount);
             return;
         }
         Digestion data = get(player);
         if (data == null) {
             return;
         }
-        float points = exhaustionAmount / Math.max(0.1F, HungerConfig.maxExhaustion());
+        float points = amount / Math.max(0.1F, HungerConfig.maxExhaustion());
         float carry = data.getDirectHungerCarry() + points;
         int whole = (int) carry;
         if (whole > 0) {
@@ -104,6 +116,42 @@ public final class DigestionHelper {
             food.setSaturation(Math.min(food.getSaturationLevel(), newFood));
         }
         data.setDirectHungerCarry(carry);
+    }
+
+    /**
+     * 统一的消耗值写入入口（先广播 {@link ExhaustionEvent}，可改量/取消）。
+     *
+     * @return 是否真正写入了消耗值（被取消或改为 0 时返回 false）
+     */
+    public static boolean applyExhaustion(Player player, float amount, ExhaustionEvent.Source source) {
+        if (player == null || amount <= 0.0F) {
+            return false;
+        }
+        ExhaustionEvent event = new ExhaustionEvent(player, amount, source);
+        if (MinecraftForge.EVENT_BUS.post(event)) {
+            return false;
+        }
+        float finalAmount = event.getAmount();
+        if (finalAmount <= 0.0F) {
+            return false;
+        }
+        player.causeFoodExhaustion(finalAmount);
+        return true;
+    }
+
+    /**
+     * 解析食物 → 消化值的默认值（配置覆盖 &gt; 代码登记 &gt; nutrition × digestionPerNutrition），
+     * 并在返回前广播 {@link FoodDigestionValueEvent}。进食结算、HUD、tooltip、回血预估共用此结果。
+     */
+    public static FoodValues defaultFoodValues(Player player, ItemStack stack, FoodProperties food) {
+        Float override = FoodDigestionValues.resolve(stack);
+        float digestion = override != null
+                ? override
+                : Math.max(0.0F, food.getNutrition() * HungerConfig.digestionPerNutrition());
+        float saturation = Math.max(0.0F, digestion * food.getSaturationModifier() * 2.0F);
+        FoodDigestionValueEvent event = new FoodDigestionValueEvent(player, stack, food, digestion, saturation);
+        MinecraftForge.EVENT_BUS.post(event);
+        return new FoodValues(event.getDigestion(), event.getDigestionSaturation());
     }
 
     /** 增加消化饱和度；超出上限部分由 {@link Digestion} 广播 {@link DigestionOverflowEvent} */

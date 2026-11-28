@@ -1,5 +1,7 @@
 package dev.newhungersystem.mixin;
 
+import dev.newhungersystem.api.DigestionHelper;
+import dev.newhungersystem.api.ExhaustionEvent;
 import dev.newhungersystem.api.HungerConfig;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.entity.player.Player;
@@ -35,7 +37,8 @@ public abstract class BlockBreakExhaustionMixin {
                                                       ItemStack tool) {
         float hardness = state.getDestroySpeed(level, pos);
         if (hardness > 0.0F) {
-            player.causeFoodExhaustion(HungerConfig.blockBreakExhaustionPerHardness() * hardness);
+            DigestionHelper.applyExhaustion(player, HungerConfig.blockBreakExhaustionPerHardness() * hardness,
+                    ExhaustionEvent.Source.BLOCK_BREAK);
         }
     }
 }

@@ -59,6 +59,9 @@ public final class HungerConfig {
     /** 死亡复活是否保留死亡前的饥饿值/饱和度 (默认 true). 关闭则复活使用开局数值 */
     public static final ForgeConfigSpec.BooleanValue KEEP_HUNGER_ON_RESPAWN;
 
+    /** 死亡复活是否保留死亡前的消化值/消化饱和度 (默认 true). 与饥饿值的保留开关相互独立 */
+    public static final ForgeConfigSpec.BooleanValue KEEP_DIGESTION_ON_DEATH;
+
     /**
      * 低饥饿死亡复活保底 (% of maxHunger, 默认 30, 0 = 关闭).
      * 死亡时饥饿值低于该百分比 → 复活后把饥饿值补到该值；同一个数值同时作为判定阈值与给予值。
@@ -198,11 +201,17 @@ public final class HungerConfig {
         builder.push("respawn");
         KEEP_HUNGER_ON_RESPAWN = builder
                 .comment("If true, keep the player's food level & saturation on death-respawn (overrides vanilla reset to 20/5).",
-                        "Also controls digestion value / digestion saturation: when false they are reset to",
-                        "startDigestion / startDigestionSaturation too, so old digestion cannot refill hunger.",
-                        "Non-death player clones (dimension change / returning from the End) always keep them.",
+                        "Digestion is controlled separately by keepDigestionOnDeath.",
+                        "Non-death player clones (dimension change / returning from the End) always keep both.",
                         "Default true.")
                 .define("keepHungerOnRespawn", true);
+        KEEP_DIGESTION_ON_DEATH = builder
+                .comment("If true, keep digestion value / digestion saturation on death-respawn.",
+                        "If false, they are reset to startDigestion / startDigestionSaturation, and the",
+                        "digestion part of the death-loss percentages is skipped (no double penalty).",
+                        "This is independent from keepHungerOnRespawn.",
+                        "Non-death player clones always keep digestion. Default true.")
+                .define("keepDigestionOnDeath", true);
         STARVATION_RESPAWN_HUNGER_PERCENT = builder
                 .comment("Low-hunger death floor: if the player dies with foodLevel below",
                         "maxHunger * this percent, respawn grants exactly that many hunger points.",
@@ -574,6 +583,11 @@ public final class HungerConfig {
     /** 死亡复活是否保留死亡前的饥饿值/饱和度 */
     public static boolean keepHungerOnRespawn() {
         return flag(KEEP_HUNGER_ON_RESPAWN, true);
+    }
+
+    /** 死亡复活是否保留死亡前的消化值/消化饱和度 */
+    public static boolean keepDigestionOnDeath() {
+        return flag(KEEP_DIGESTION_ON_DEATH, true);
     }
 
     /** 低饥饿死亡复活保底百分比 (0 = 关闭) */
